@@ -960,7 +960,6 @@ pub const ReaderOverlayComponent = struct {
 
         const col_rect = readingColumnRect(host, overlay_rect, self.wrap_cols);
         const scaled_padding = dpi.scale(10, host.ui_scale);
-        const cached_char_w = layoutCharWidth(self, host);
         const hovered_href = self.hoveredLinkHref();
         self.link_hits.clearRetainingCapacity();
         var y: c_int = overlay_rect.y + title_h + scaled_padding - @as(c_int, @intFromFloat(self.overlay.scroll_offset));
