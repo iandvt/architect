@@ -441,7 +441,10 @@ pub const RecentFoldersOverlayComponent = struct {
 
         // Render entries
         const entry_font_size: c_int = dpi.scale(16, ui_scale);
-        const entry_fonts = font_cache.get(entry_font_size) catch null;
+        const entry_fonts = font_cache.get(entry_font_size) catch |err| blk: {
+            log.warn("failed to load entry font size {d}: {}", .{ entry_font_size, err });
+            break :blk null;
+        };
         const query = std.mem.trim(u8, self.search_query.items, " \t");
 
         for (cache.entries, 0..) |entry_tex, idx| {
