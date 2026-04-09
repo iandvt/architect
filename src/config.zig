@@ -574,7 +574,7 @@ pub const Persistence = struct {
     /// Keeps list sorted by count (descending), then by recency (descending),
     /// and trims to max size.
     pub fn appendRecentFolder(self: *Persistence, allocator: std.mem.Allocator, folder: []const u8) !void {
-        self.visit_counter += 1;
+        self.visit_counter +|= 1;
 
         // Check if folder already exists
         for (self.recent_folders.items) |*existing| {
@@ -620,7 +620,7 @@ pub const Persistence = struct {
     fn loadRecentFoldersFromMap(self: *Persistence, allocator: std.mem.Allocator, map: toml.HashMap(u32)) !void {
         var it = map.map.iterator();
         while (it.next()) |entry| {
-            self.visit_counter += 1;
+            self.visit_counter +|= 1;
             const path_copy = try allocator.dupe(u8, entry.key_ptr.*);
             errdefer allocator.free(path_copy);
             try self.recent_folders.append(allocator, .{
@@ -630,12 +630,18 @@ pub const Persistence = struct {
             });
         }
         self.sortRecentFolders();
+
+        while (self.recent_folders.items.len > max_recent_folders) {
+            if (self.recent_folders.pop()) |removed| {
+                allocator.free(removed.path);
+            }
+        }
     }
 
     /// Directly append a folder with count (used during migration from V2)
     fn appendRecentFolderDirect(self: *Persistence, allocator: std.mem.Allocator, folder: []const u8, count: u32) !void {
         if (self.recent_folders.items.len >= max_recent_folders) return;
-        self.visit_counter += 1;
+        self.visit_counter +|= 1;
         const path_copy = try allocator.dupe(u8, folder);
         errdefer allocator.free(path_copy);
         try self.recent_folders.append(allocator, .{
