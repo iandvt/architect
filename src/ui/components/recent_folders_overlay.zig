@@ -273,6 +273,8 @@ pub const RecentFoldersOverlayComponent = struct {
                             }
                         }
                     }
+
+                    return true;
                 }
             },
             c.SDL_EVENT_TEXT_INPUT => {
@@ -374,7 +376,7 @@ pub const RecentFoldersOverlayComponent = struct {
         const font_size = dpi.scale(@max(12, @min(20, @divFloor(rect.h, 2))), ui_scale);
         const fonts = cache.get(font_size) catch return;
 
-        const glyph = "\xe2\x8c\x98O";
+        const glyph = "⌘O";
         const fg = theme.foreground;
         const fg_color = c.SDL_Color{ .r = fg.r, .g = fg.g, .b = fg.b, .a = 255 };
         const surface = c.TTF_RenderText_Blended(fonts.regular, glyph.ptr, @intCast(glyph.len), fg_color) orelse return;
@@ -677,7 +679,7 @@ pub const RecentFoldersOverlayComponent = struct {
             const source_idx = self.filtered_indices.items[idx];
             var key_buf: [8]u8 = undefined;
             const digit: u8 = @as(u8, @intCast((idx + 1) % 10));
-            const key_slice = std.fmt.bufPrint(&key_buf, "\xe2\x8c\x98{d}", .{digit}) catch |err| blk: {
+            const key_slice = std.fmt.bufPrint(&key_buf, "⌘{d}", .{digit}) catch |err| blk: {
                 log.warn("failed to format hotkey: {}", .{err});
                 break :blk key_buf[0..0];
             };

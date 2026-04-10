@@ -37,8 +37,6 @@ const TableRowMetrics = struct {
     row_height: c_int = 0,
 };
 
-const TextTex = search_utils.TextTex;
-
 const DrawSize = struct {
     w: c_int,
     h: c_int,
@@ -276,7 +274,10 @@ pub const ReaderOverlayComponent = struct {
         const plain_texts = self.allocator.alloc([]const u8, self.lines.items.len) catch return;
         defer self.allocator.free(plain_texts);
         for (self.lines.items, 0..) |line, i| {
-            plain_texts[i] = line.plain_text;
+            plain_texts[i] = switch (line.kind) {
+                .blank, .horizontal_rule, .prompt_separator => "",
+                else => line.plain_text,
+            };
         }
         search_utils.rebuildMatches(self.allocator, &self.matches, plain_texts, self.search_query.items, &self.selected_match, null);
     }
