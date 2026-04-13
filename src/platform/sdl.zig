@@ -11,11 +11,13 @@ pub const InitError = error{
     TTFInitFailed,
     WindowCreationFailed,
     RendererCreationFailed,
+    EventRegistrationFailed,
 };
 
 pub const Platform = struct {
     window: *c.SDL_Window,
     renderer: *c.SDL_Renderer,
+    wake_event_type: u32,
     vsync_enabled: bool,
     /// window logical size in points
     window_w: c_int,
@@ -96,6 +98,11 @@ pub fn init(
         }
         break :blk vsync_requested and success;
     };
+    const wake_event_type = c.SDL_RegisterEvents(1);
+    if (wake_event_type == std.math.maxInt(u32)) {
+        std.debug.print("SDL_RegisterEvents Error: {s}\n", .{c.SDL_GetError()});
+        return error.EventRegistrationFailed;
+    }
 
     var window_w: c_int = 0;
     var window_h: c_int = 0;
@@ -109,6 +116,7 @@ pub fn init(
     return Platform{
         .window = window,
         .renderer = renderer,
+        .wake_event_type = wake_event_type,
         .vsync_enabled = vsync_enabled,
         .window_w = window_w,
         .window_h = window_h,
@@ -117,6 +125,29 @@ pub fn init(
         .scale_x = scale_x,
         .scale_y = scale_y,
     };
+}
+
+pub fn waitEventTimeout(timeout_ms: c_int) ?c.SDL_Event {
+    if (timeout_ms <= 0) return null;
+
+    var event = std.mem.zeroes(c.SDL_Event);
+    if (!c.SDL_WaitEventTimeout(&event, timeout_ms)) return null;
+    return event;
+}
+
+pub fn pushWakeEvent(platform_handle: *const Platform) void {
+    var event = std.mem.zeroes(c.SDL_Event);
+    event.user.type = platform_handle.wake_event_type;
+    _ = c.SDL_PushEvent(&event);
+}
+
+pub fn isWakeEvent(platform_handle: *const Platform, event: *const c.SDL_Event) bool {
+    return event.type == platform_handle.wake_event_type;
+}
+
+pub fn pushWakeEventFromOpaque(context: ?*anyopaque) void {
+    const platform_handle = @as(*const Platform, @ptrCast(@alignCast(context orelse return)));
+    pushWakeEvent(platform_handle);
 }
 
 pub fn startTextInput(window: *c.SDL_Window) void {

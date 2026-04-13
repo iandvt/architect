@@ -2,7 +2,7 @@
 
 ## System Overview
 
-Architect is a **single-process, layered desktop application** built in Zig that functions as a grid-based terminal multiplexer optimized for multi-agent AI coding workflows. It follows a five-layer architecture: a thin entrypoint delegates to an application runtime that owns the frame loop, platform abstraction (SDL3), session management (PTY + ghostty-vt terminal emulation), scene rendering, and a component-based UI overlay system. The UI and terminal loop run on the main thread; background threads are used only for bounded auxiliary work (notification socket listener and quit-time agent-teardown worker). The frame loop polls events, updates state, renders the scene, then renders UI overlays on top. The application uses an action-queue pattern for UI-to-app mutations, epoch-based cache invalidation for efficient rendering, and a vtable-based component registry for extensible UI overlays.
+Architect is a **single-process, layered desktop application** built in Zig that functions as a grid-based terminal multiplexer optimized for multi-agent AI coding workflows. It follows a five-layer architecture: a thin entrypoint delegates to an application runtime that owns the frame loop, platform abstraction (SDL3), session management (PTY + ghostty-vt terminal emulation), scene rendering, and a component-based UI overlay system. The UI and terminal loop run on the main thread; background threads are used only for bounded auxiliary work (notification socket listener and quit-time agent-teardown worker). The frame loop uses a wakeable wait model: active work continues at the normal frame cadence, while idle frames block in SDL until either a wake-worthy event arrives or the next idle deadline expires. The application uses an action-queue pattern for UI-to-app mutations, epoch-based cache invalidation for efficient rendering, and a vtable-based component registry for extensible UI overlays.
 
 ## Component Diagram
 
@@ -84,7 +84,7 @@ Platform    Session    Rendering    UI Overlay
 **Invariants:**
 - Session, Rendering, and UI Overlay layers never import from each other directly. All cross-layer communication flows through the Application layer or shared types.
 - UI components communicate with the application exclusively via the `UiAction` queue (never direct state mutation).
-- Background threads are intentionally limited to two cases: the notification socket listener (`session/notify.zig`) and a quit-time agent-teardown worker in `app/runtime.zig`. Both communicate completion/state back to the main thread through thread-safe primitives.
+- Background threads are intentionally limited to two cases: the notification socket listener (`session/notify.zig`) and a quit-time agent-teardown worker in `app/runtime.zig`. Both communicate completion/state back to the main thread through thread-safe primitives. The notification listener also posts a custom SDL wake event after queueing a notification so the idle frame loop breaks out of `SDL_WaitEventTimeout(...)` promptly.
 - Shutdown order is UI-first for teardown dependencies: `UiRoot.deinit()` runs before session teardown so components that reference sessions are released while session memory is still valid.
 - Runtime uses a one-shot teardown guard around UI cleanup so mixed `errdefer`/`defer` error unwind paths cannot deinitialize `UiRoot` twice.
 - Runtime persistence is updated during the frame loop when runtime state changes (cwd changes, terminal spawn/despawn, window move/resize, font size changes), and finalization is explicit at the end of `app/runtime.zig`: final save and deinit `Persistence` before deferred subsystem teardown begins.
@@ -128,9 +128,15 @@ These patterns are mandatory for all new code. They are derived from the archite
 
 ```
                     +--------------------------------------+
+                    | Optional SDL_WaitEventTimeout()      |
+                    | (idle only; returns early on wake)   |
+                    +------------------+-------------------+
+                                       | event or timeout
+                                       v
+                    +--------------------------------------+
                     |          SDL Event Queue              |
                     +------------------+-------------------+
-                                       | poll
+                                       | drain
                                        v
                     +--------------------------------------+
                     |   Scale to render coordinates         |
@@ -165,6 +171,7 @@ These patterns are mandatory for all new code. They are derived from the archite
                     +--------------------------------------+
                     |   Drain session output -> ghostty-vt  |
                     |   Drain notification queue             |
+                    |   (socket thread can post wake event) |
                     +------------------+-------------------+
                                        |
                                        v
