@@ -12,3 +12,7 @@ pub const std_options: std.Options = .{
 pub fn main() !void {
     try runtime.run();
 }
+
+test {
+    _ = @import("ui/components/diff_overlay.zig");
+}

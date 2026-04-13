@@ -177,9 +177,9 @@ pub const DiffOverlayComponent = struct {
     const tab_display_width: usize = 4;
     const min_printable_char: u8 = 32;
 
-    const saved_comment_height: c_int = 32;
-    const editing_comment_height: c_int = 90;
-    const comment_input_height: c_int = 44;
+    const saved_comment_min_height: c_int = 32;
+    const editing_comment_min_height: c_int = 90;
+    const comment_input_min_height: c_int = 44;
     const comment_button_height: c_int = 28;
     const comment_button_width: c_int = 70;
     const comment_delete_btn_size: c_int = 16;
@@ -893,6 +893,270 @@ pub const DiffOverlayComponent = struct {
         return i;
     }
 
+    const WrappedCommentLine = struct {
+        start: usize,
+        end: usize,
+    };
+
+    fn forEachWrappedCommentLine(
+        text: []const u8,
+        max_cols: usize,
+        context: anytype,
+        comptime callback: fn (@TypeOf(context), WrappedCommentLine) void,
+    ) void {
+        var logical_start: usize = 0;
+        while (logical_start <= text.len) {
+            const logical_end = std.mem.indexOfScalarPos(u8, text, logical_start, '\n') orelse text.len;
+            const logical_line = text[logical_start..logical_end];
+
+            if (logical_line.len == 0) {
+                callback(context, .{ .start = logical_start, .end = logical_start });
+            } else if (max_cols == 0 or textDisplayCols(logical_line) <= max_cols) {
+                callback(context, .{ .start = logical_start, .end = logical_end });
+            } else {
+                var rel_start: usize = 0;
+                while (rel_start < logical_line.len) {
+                    const rel_end = byteOffsetAtDisplayCol(logical_line, rel_start, max_cols);
+                    if (rel_end <= rel_start) {
+                        const byte_len = std.unicode.utf8ByteSequenceLength(logical_line[rel_start]) catch |err| blk: {
+                            log.warn("invalid UTF-8 lead byte in comment text at offset {}: {}", .{ rel_start, err });
+                            break :blk 1;
+                        };
+                        const safe_end = @min(logical_line.len, rel_start + byte_len);
+                        callback(context, .{
+                            .start = logical_start + rel_start,
+                            .end = logical_start + safe_end,
+                        });
+                        rel_start = safe_end;
+                        continue;
+                    }
+                    callback(context, .{
+                        .start = logical_start + rel_start,
+                        .end = logical_start + rel_end,
+                    });
+                    rel_start = rel_end;
+                }
+            }
+
+            if (logical_end == text.len) break;
+            logical_start = logical_end + 1;
+        }
+    }
+
+    fn wrappedCommentLineCount(text: []const u8, max_cols: usize) usize {
+        const CountContext = struct {
+            count: usize = 0,
+
+            fn visit(ctx: *@This(), _: WrappedCommentLine) void {
+                ctx.count += 1;
+            }
+        };
+
+        var context = CountContext{};
+        forEachWrappedCommentLine(text, max_cols, &context, CountContext.visit);
+        return @max(@as(usize, 1), context.count);
+    }
+
+    fn savedCommentHeightForLineCount(ui_scale: f32, line_height_px: c_int, line_count: usize) c_int {
+        const wrapped_line_count = @max(@as(usize, 1), line_count);
+        return @max(
+            dpi.scale(saved_comment_min_height, ui_scale),
+            @as(c_int, @intCast(wrapped_line_count)) * line_height_px + dpi.scale(8, ui_scale),
+        );
+    }
+
+    const EditingCommentLayout = struct {
+        wrap_cols: usize,
+        line_count: usize,
+        input_h: c_int,
+        total_h: c_int,
+    };
+
+    fn editingCommentLayoutForLineCount(ui_scale: f32, line_height_px: c_int, line_count: usize) EditingCommentLayout {
+        const wrapped_line_count = @max(@as(usize, 1), line_count);
+        const input_h = @max(
+            dpi.scale(comment_input_min_height, ui_scale),
+            @as(c_int, @intCast(wrapped_line_count)) * line_height_px + dpi.scale(8, ui_scale),
+        );
+        return .{
+            .wrap_cols = 0,
+            .line_count = wrapped_line_count,
+            .input_h = input_h,
+            .total_h = @max(
+                dpi.scale(editing_comment_min_height, ui_scale),
+                input_h + dpi.scale(46, ui_scale),
+            ),
+        };
+    }
+
+    fn diffTextAreaWidth(host: *const types.UiHost) c_int {
+        const rect = FullscreenOverlay.overlayRect(host);
+        const scaled_gutter_w = dpi.scale(gutter_width, host.ui_scale);
+        const scaled_marker_w = dpi.scale(marker_width, host.ui_scale);
+        const scaled_padding = dpi.scale(FullscreenOverlay.text_padding, host.ui_scale);
+        const scrollbar_w = scrollbar.reservedWidth(host.ui_scale);
+        return @max(1, rect.w - scaled_gutter_w * 2 - scaled_marker_w - scaled_padding - scrollbar_w);
+    }
+
+    fn estimatedCommentCharWidth(self: *const DiffOverlayComponent, host: *const types.UiHost) c_int {
+        if (self.wrap_cols > 0) {
+            return @max(1, @divFloor(diffTextAreaWidth(host), @as(c_int, @intCast(self.wrap_cols))));
+        }
+        return @max(1, dpi.scale(8, host.ui_scale));
+    }
+
+    fn commentWrapColsForWidth(self: *const DiffOverlayComponent, host: *const types.UiHost, text_width: c_int) usize {
+        return @max(
+            @as(usize, 1),
+            @as(usize, @intCast(@divFloor(@max(text_width, 1), self.estimatedCommentCharWidth(host)))),
+        );
+    }
+
+    fn savedCommentTextWidth(host: *const types.UiHost, rect: geom.Rect) c_int {
+        const scaled_padding = dpi.scale(FullscreenOverlay.text_padding, host.ui_scale);
+        const accent_w = dpi.scale(4, host.ui_scale);
+        const del_space = dpi.scale(comment_delete_btn_size + 16, host.ui_scale);
+        return @max(1, rect.w - scaled_padding * 2 - accent_w - dpi.scale(8, host.ui_scale) - del_space);
+    }
+
+    fn editingCommentInputWidth(host: *const types.UiHost, rect: geom.Rect) c_int {
+        const scaled_padding = dpi.scale(FullscreenOverlay.text_padding, host.ui_scale);
+        return @max(1, rect.w - scaled_padding * 2 - dpi.scale(12, host.ui_scale));
+    }
+
+    fn editingCommentTextWidth(host: *const types.UiHost, rect: geom.Rect) c_int {
+        return @max(1, editingCommentInputWidth(host, rect) - dpi.scale(8, host.ui_scale));
+    }
+
+    fn savedCommentHeightForText(self: *const DiffOverlayComponent, host: *const types.UiHost, rect: geom.Rect, text: []const u8) c_int {
+        const wrap_cols = self.commentWrapColsForWidth(host, savedCommentTextWidth(host, rect));
+        return savedCommentHeightForLineCount(host.ui_scale, self.lineHeight(host), wrappedCommentLineCount(text, wrap_cols));
+    }
+
+    fn editingCommentLayoutForText(self: *const DiffOverlayComponent, host: *const types.UiHost, rect: geom.Rect, text: []const u8) EditingCommentLayout {
+        const wrap_cols = self.commentWrapColsForWidth(host, editingCommentTextWidth(host, rect));
+        var layout = editingCommentLayoutForLineCount(host.ui_scale, self.lineHeight(host), wrappedCommentLineCount(text, wrap_cols));
+        layout.wrap_cols = wrap_cols;
+        return layout;
+    }
+
+    fn savedCommentHeightForComment(self: *const DiffOverlayComponent, host: *const types.UiHost, rect: geom.Rect, comment: DiffComment) c_int {
+        return self.savedCommentHeightForText(host, rect, comment.text);
+    }
+
+    fn measureTextWidth(font: *c.TTF_Font, text: []const u8) c_int {
+        if (text.len == 0) return 0;
+        var width: c_int = 0;
+        var height: c_int = 0;
+        _ = c.TTF_GetStringSize(font, text.ptr, text.len, &width, &height);
+        return @max(0, width);
+    }
+
+    fn renderTextTextureClipped(renderer: *c.SDL_Renderer, tex: *c.SDL_Texture, x: c_int, y: c_int, width: c_int, height: c_int, max_width: c_int) void {
+        var render_width = width;
+        var src_rect: c.SDL_FRect = undefined;
+        var src_ptr: ?*const c.SDL_FRect = null;
+
+        if (render_width > max_width) {
+            render_width = @max(1, max_width);
+            src_rect = .{
+                .x = 0,
+                .y = 0,
+                .w = @floatFromInt(render_width),
+                .h = @floatFromInt(height),
+            };
+            src_ptr = &src_rect;
+        }
+
+        _ = c.SDL_RenderTexture(renderer, tex, src_ptr, &c.SDL_FRect{
+            .x = @floatFromInt(x),
+            .y = @floatFromInt(y),
+            .w = @floatFromInt(render_width),
+            .h = @floatFromInt(height),
+        });
+    }
+
+    fn renderWrappedCommentText(
+        self: *DiffOverlayComponent,
+        renderer: *c.SDL_Renderer,
+        font: *c.TTF_Font,
+        text: []const u8,
+        color: c.SDL_Color,
+        alpha: f32,
+        x: c_int,
+        y: c_int,
+        max_width: c_int,
+        line_height_px: c_int,
+        wrap_cols: usize,
+    ) void {
+        const RenderContext = struct {
+            self: *DiffOverlayComponent,
+            renderer: *c.SDL_Renderer,
+            font: *c.TTF_Font,
+            text: []const u8,
+            color: c.SDL_Color,
+            alpha: f32,
+            x: c_int,
+            y: c_int,
+            max_width: c_int,
+            line_height_px: c_int,
+            line_index: usize = 0,
+
+            fn renderLine(ctx: *@This(), line: WrappedCommentLine) void {
+                defer ctx.line_index += 1;
+
+                const line_text = ctx.text[line.start..line.end];
+                if (line_text.len == 0) return;
+
+                const tex = ctx.self.makeTextTexture(ctx.renderer, ctx.font, line_text, ctx.color) catch return;
+                defer c.SDL_DestroyTexture(tex.tex);
+
+                _ = c.SDL_SetTextureAlphaMod(tex.tex, @intFromFloat(255.0 * ctx.alpha));
+                const line_y = ctx.y + @as(c_int, @intCast(ctx.line_index)) * ctx.line_height_px;
+                const draw_y = line_y + @divFloor(ctx.line_height_px - tex.h, 2);
+                renderTextTextureClipped(ctx.renderer, tex.tex, ctx.x, draw_y, tex.w, tex.h, ctx.max_width);
+            }
+        };
+
+        var context = RenderContext{
+            .self = self,
+            .renderer = renderer,
+            .font = font,
+            .text = text,
+            .color = color,
+            .alpha = alpha,
+            .x = x,
+            .y = y,
+            .max_width = max_width,
+            .line_height_px = line_height_px,
+        };
+        forEachWrappedCommentLine(text, wrap_cols, &context, RenderContext.renderLine);
+    }
+
+    fn wrappedCommentCursorLayout(text: []const u8, wrap_cols: usize) struct { line_index: usize, line_start: usize, line_end: usize } {
+        const CursorContext = struct {
+            line_index: usize = 0,
+            last_line_index: usize = 0,
+            last_line_start: usize = 0,
+            last_line_end: usize = 0,
+
+            fn visit(ctx: *@This(), line: WrappedCommentLine) void {
+                ctx.last_line_index = ctx.line_index;
+                ctx.last_line_start = line.start;
+                ctx.last_line_end = line.end;
+                ctx.line_index += 1;
+            }
+        };
+
+        var context = CursorContext{};
+        forEachWrappedCommentLine(text, wrap_cols, &context, CursorContext.visit);
+        return .{
+            .line_index = context.last_line_index,
+            .line_start = context.last_line_start,
+            .line_end = context.last_line_end,
+        };
+    }
+
     // --- Animation helpers ---
 
     fn commentAnimProgress(self: *const DiffOverlayComponent, now_ms: i64) f32 {
@@ -937,7 +1201,7 @@ pub const DiffOverlayComponent = struct {
 
     // --- Layout helpers ---
 
-    fn lineHeight(self: *DiffOverlayComponent, host: *const types.UiHost) c_int {
+    fn lineHeight(self: *const DiffOverlayComponent, host: *const types.UiHost) c_int {
         if (self.cache) |cache| {
             return cache.line_height;
         }
@@ -1166,34 +1430,15 @@ pub const DiffOverlayComponent = struct {
                     const rect = FullscreenOverlay.overlayRect(host);
                     const scaled_title_h = dpi.scale(FullscreenOverlay.title_height, host.ui_scale);
                     const scaled_line_h = self.lineHeight(host);
-                    const total_h = dpi.scale(editing_comment_height, host.ui_scale);
-                    const btn_h = dpi.scale(comment_button_height, host.ui_scale);
-                    const btn_w = dpi.scale(comment_button_width, host.ui_scale);
-                    const scaled_padding = dpi.scale(FullscreenOverlay.text_padding, host.ui_scale);
                     const scroll_int: c_int = @intFromFloat(self.overlay.scroll_offset);
                     const content_top = rect.y + scaled_title_h;
+                    const btn_rects = self.commentButtonRects(host, rect, scaled_line_h, scroll_int, content_top, ed.target_display_row);
 
-                    const comment_y_base = self.computeRowY(ed.target_display_row, scaled_line_h, host.ui_scale, host.now_ms) + scaled_line_h;
-                    // Subtract any saved comment height at this row (editing comes after saved)
-                    var saved_h: c_int = 0;
-                    for (self.comments.items) |comment| {
-                        if (comment.sent) continue;
-                        if (comment.display_row_index) |dri| {
-                            if (dri == ed.target_display_row) {
-                                saved_h += dpi.scale(saved_comment_height, host.ui_scale);
-                            }
-                        }
-                    }
-                    const edit_y = content_top + comment_y_base + saved_h - scroll_int;
-                    const btn_y = edit_y + total_h - btn_h - dpi.scale(6, host.ui_scale);
-                    const submit_x = rect.x + rect.w - scaled_padding - btn_w * 2 - dpi.scale(12, host.ui_scale);
-                    const cancel_x = submit_x + btn_w + dpi.scale(6, host.ui_scale);
-
-                    if (geom.containsPoint(.{ .x = submit_x, .y = btn_y, .w = btn_w, .h = btn_h }, mouse_x, mouse_y)) {
+                    if (geom.containsPoint(btn_rects.submit, mouse_x, mouse_y)) {
                         self.submitComment(host.now_ms);
                         return true;
                     }
-                    if (geom.containsPoint(.{ .x = cancel_x, .y = btn_y, .w = btn_w, .h = btn_h }, mouse_x, mouse_y)) {
+                    if (geom.containsPoint(btn_rects.cancel, mouse_x, mouse_y)) {
                         self.cancelEditing(host.now_ms);
                         return true;
                     }
@@ -1208,7 +1453,7 @@ pub const DiffOverlayComponent = struct {
                 if (mouse_y >= content_top and scaled_line_h > 0) {
                     const relative_y = mouse_y - content_top + scroll_int;
                     if (relative_y >= 0) {
-                        const target = self.resolveClickTarget(relative_y, scaled_line_h, host.ui_scale, host.now_ms);
+                        const target = self.resolveClickTarget(host, rect, relative_y, scaled_line_h);
                         switch (target) {
                             .diff_row => |row_idx| {
                                 const row = self.display_rows.items[row_idx];
@@ -1326,7 +1571,7 @@ pub const DiffOverlayComponent = struct {
                 } else if (mouse_y >= content_top and scaled_line_h > 0) {
                     const relative_y = mouse_y - content_top + scroll_int;
                     if (relative_y >= 0) {
-                        const target = self.resolveClickTarget(relative_y, scaled_line_h, host.ui_scale, host.now_ms);
+                        const target = self.resolveClickTarget(host, rect, relative_y, scaled_line_h);
                         switch (target) {
                             .diff_row => |row_idx| {
                                 if (row_idx < self.display_rows.items.len) {
@@ -1893,7 +2138,7 @@ pub const DiffOverlayComponent = struct {
 
         // Compute y_pos incrementally to avoid O(n²) from per-row computeRowY calls
         var cumulative_y: c_int = if (has_comments)
-            content_top + self.computeRowY(first_visible, row_height, host.ui_scale, host.now_ms) - scroll_int
+            content_top + self.computeRowY(host, rect, first_visible, row_height) - scroll_int
         else
             content_top + @as(c_int, @intCast(first_visible)) * row_height - scroll_int;
 
@@ -1903,7 +2148,7 @@ pub const DiffOverlayComponent = struct {
             const y_pos = cumulative_y;
 
             // Advance cumulative_y for the next iteration (row height + any comment height)
-            cumulative_y += row_height + self.commentHeightAtRow(row_index, host.ui_scale, host.now_ms);
+            cumulative_y += row_height + self.commentHeightAtRow(host, rect, row_index);
 
             // Skip rows above the viewport, but render their attached comments
             if (y_pos + row_height < content_top) {
@@ -2082,15 +2327,15 @@ pub const DiffOverlayComponent = struct {
                 if (dri == row_index) {
                     if (is_anim_row and self.comment_anim.? == .submitting) {
                         self.renderSubmitMorph(host, renderer, assets, rect, comment_y, comment, anim_p);
-                        const full_edit_h: f32 = @floatFromInt(dpi.scale(editing_comment_height, host.ui_scale));
-                        const full_saved_h: f32 = @floatFromInt(dpi.scale(saved_comment_height, host.ui_scale));
+                        const full_edit_h: f32 = @floatFromInt(self.editingCommentLayoutForText(host, rect, comment.text).total_h);
+                        const full_saved_h: f32 = @floatFromInt(self.savedCommentHeightForComment(host, rect, comment));
                         comment_y += @intFromFloat(full_edit_h + (full_saved_h - full_edit_h) * anim_p);
                     } else if (is_anim_row and self.comment_anim.? == .submitted_glow) {
                         self.renderSavedCommentWithGlow(host, renderer, assets, rect, comment_y, comment, anim_p, ci);
-                        comment_y += dpi.scale(saved_comment_height, host.ui_scale);
+                        comment_y += self.savedCommentHeightForComment(host, rect, comment);
                     } else {
                         self.renderSavedComment(host, renderer, assets, rect, comment_y, comment, ci);
-                        comment_y += dpi.scale(saved_comment_height, host.ui_scale);
+                        comment_y += self.savedCommentHeightForComment(host, rect, comment);
                     }
                 }
             }
@@ -2381,18 +2626,18 @@ pub const DiffOverlayComponent = struct {
         }
     }
 
-    fn commentHeightAtRow(self: *DiffOverlayComponent, row_index: usize, ui_scale: f32, now_ms: i64) c_int {
+    fn commentHeightAtRow(self: *DiffOverlayComponent, host: *const types.UiHost, rect: geom.Rect, row_index: usize) c_int {
         var h: c_int = 0;
-        const full_saved_h = dpi.scale(saved_comment_height, ui_scale);
-        const full_edit_h = dpi.scale(editing_comment_height, ui_scale);
+        const now_ms = host.now_ms;
         const is_anim_row = self.comment_anim != null and self.comment_anim_row == row_index;
 
         for (self.comments.items) |comment| {
             if (comment.sent) continue;
             if (comment.display_row_index) |dri| {
                 if (dri == row_index) {
+                    const full_saved_h = self.savedCommentHeightForComment(host, rect, comment);
                     if (is_anim_row and self.comment_anim.? == .submitting) {
-                        // During morph: height interpolates from editing to saved
+                        const full_edit_h = self.editingCommentLayoutForText(host, rect, comment.text).total_h;
                         const p = self.commentAnimProgress(now_ms);
                         const edit_f: f32 = @floatFromInt(full_edit_h);
                         const saved_f: f32 = @floatFromInt(full_saved_h);
@@ -2405,6 +2650,7 @@ pub const DiffOverlayComponent = struct {
         }
         if (self.editing) |ed| {
             if (ed.target_display_row == row_index) {
+                const full_edit_h = self.editingCommentLayoutForText(host, rect, ed.input_buf.items).total_h;
                 if (is_anim_row) {
                     const p = self.commentAnimProgress(now_ms);
                     const edit_f: f32 = @floatFromInt(full_edit_h);
@@ -2425,22 +2671,23 @@ pub const DiffOverlayComponent = struct {
 
     fn totalCommentPixelHeight(self: *DiffOverlayComponent, host: *const types.UiHost) c_int {
         var total: c_int = 0;
+        const rect = FullscreenOverlay.overlayRect(host);
         for (self.display_rows.items, 0..) |_, i| {
-            total += self.commentHeightAtRow(i, host.ui_scale, host.now_ms);
+            total += self.commentHeightAtRow(host, rect, i);
         }
         return total;
     }
 
-    fn computeRowY(self: *DiffOverlayComponent, row_index: usize, row_height: c_int, ui_scale: f32, now_ms: i64) c_int {
+    fn computeRowY(self: *DiffOverlayComponent, host: *const types.UiHost, rect: geom.Rect, row_index: usize, row_height: c_int) c_int {
         var y: c_int = @as(c_int, @intCast(row_index)) * row_height;
         var i: usize = 0;
         while (i < row_index) : (i += 1) {
-            y += self.commentHeightAtRow(i, ui_scale, now_ms);
+            y += self.commentHeightAtRow(host, rect, i);
         }
         return y;
     }
 
-    fn resolveClickTarget(self: *DiffOverlayComponent, relative_y: c_int, row_height: c_int, ui_scale: f32, now_ms: i64) ClickTarget {
+    fn resolveClickTarget(self: *DiffOverlayComponent, host: *const types.UiHost, rect: geom.Rect, relative_y: c_int, row_height: c_int) ClickTarget {
         if (row_height <= 0) return .{ .other = {} };
         var cumulative_y: c_int = 0;
         for (self.display_rows.items, 0..) |_, i| {
@@ -2450,7 +2697,7 @@ pub const DiffOverlayComponent = struct {
                 return .{ .diff_row = i };
             }
             cumulative_y = row_end;
-            const comment_h = self.commentHeightAtRow(i, ui_scale, now_ms);
+            const comment_h = self.commentHeightAtRow(host, rect, i);
             if (comment_h > 0 and relative_y >= cumulative_y and relative_y < cumulative_y + comment_h) {
                 return .{ .comment_box = i };
             }
@@ -2517,9 +2764,8 @@ pub const DiffOverlayComponent = struct {
         self.destroyCache();
     }
 
-    fn commentDeleteBtnRect(host: *const types.UiHost, overlay_rect: geom.Rect, comment_y: c_int) geom.Rect {
+    fn commentDeleteBtnRect(host: *const types.UiHost, overlay_rect: geom.Rect, comment_y: c_int, comment_h: c_int) geom.Rect {
         const btn_size = dpi.scale(comment_delete_btn_size, host.ui_scale);
-        const comment_h = dpi.scale(saved_comment_height, host.ui_scale);
         const margin_r = dpi.scale(8, host.ui_scale);
         return .{
             .x = overlay_rect.x + overlay_rect.w - btn_size - margin_r,
@@ -2535,15 +2781,15 @@ pub const DiffOverlayComponent = struct {
         const scaled_line_h = self.lineHeight(host);
         const content_top = rect.y + scaled_title_h;
         const scroll_int: c_int = @intFromFloat(self.overlay.scroll_offset);
-        const row_y = content_top + self.computeRowY(row_idx, scaled_line_h, host.ui_scale, host.now_ms) - scroll_int;
+        const row_y = content_top + self.computeRowY(host, rect, row_idx, scaled_line_h) - scroll_int;
         var comment_y = row_y + scaled_line_h;
-        const saved_h = dpi.scale(saved_comment_height, host.ui_scale);
 
         for (self.comments.items, 0..) |comment, ci| {
             if (comment.sent) continue;
             if (comment.display_row_index) |dri| {
                 if (dri == row_idx) {
-                    const del_btn = commentDeleteBtnRect(host, rect, comment_y);
+                    const saved_h = self.savedCommentHeightForComment(host, rect, comment);
+                    const del_btn = commentDeleteBtnRect(host, rect, comment_y, saved_h);
                     if (geom.containsPoint(del_btn, mouse_x, mouse_y)) {
                         return ci;
                     }
@@ -2765,11 +3011,16 @@ pub const DiffOverlayComponent = struct {
     // --- Comment rendering ---
 
     fn renderSavedComment(self: *DiffOverlayComponent, host: *const types.UiHost, renderer: *c.SDL_Renderer, assets: *types.UiAssets, rect: geom.Rect, y_pos: c_int, comment: DiffComment, comment_idx: usize) void {
-        const comment_h = dpi.scale(saved_comment_height, host.ui_scale);
+        const comment_h = self.savedCommentHeightForComment(host, rect, comment);
         const scaled_padding = dpi.scale(FullscreenOverlay.text_padding, host.ui_scale);
         const accent_w = dpi.scale(4, host.ui_scale);
         const alpha = self.overlay.render_alpha;
-        const del_btn = commentDeleteBtnRect(host, rect, y_pos);
+        const text_x = rect.x + scaled_padding + accent_w + dpi.scale(4, host.ui_scale);
+        const text_y = y_pos + dpi.scale(4, host.ui_scale);
+        const max_w = savedCommentTextWidth(host, rect);
+        const wrap_cols = self.commentWrapColsForWidth(host, max_w);
+        const del_btn = commentDeleteBtnRect(host, rect, y_pos, comment_h);
+        const line_height_px = self.lineHeight(host);
 
         _ = c.SDL_SetRenderDrawBlendMode(renderer, c.SDL_BLENDMODE_BLEND);
 
@@ -2797,39 +3048,27 @@ pub const DiffOverlayComponent = struct {
 
         // Render comment text in warm yellow/amber color
         const comment_color = c.SDL_Color{ .r = 230, .g = 200, .b = 110, .a = 255 };
-        const display_text = if (comment.text.len > 200) comment.text[0..200] else comment.text;
-        const tex = self.makeTextTexture(renderer, fonts.regular, display_text, comment_color) catch return;
-        defer c.SDL_DestroyTexture(tex.tex);
-        _ = c.SDL_SetTextureAlphaMod(tex.tex, @intFromFloat(255.0 * alpha));
-        const text_x = rect.x + scaled_padding + accent_w + dpi.scale(4, host.ui_scale);
-        const text_y = y_pos + @divFloor(comment_h - tex.h, 2);
-        const del_space = dpi.scale(comment_delete_btn_size + 16, host.ui_scale);
-        const max_w = rect.w - scaled_padding * 2 - accent_w - dpi.scale(8, host.ui_scale) - del_space;
-        const render_w = @min(tex.w, max_w);
-        _ = c.SDL_RenderTexture(renderer, tex.tex, null, &c.SDL_FRect{
-            .x = @floatFromInt(text_x),
-            .y = @floatFromInt(text_y),
-            .w = @floatFromInt(render_w),
-            .h = @floatFromInt(tex.h),
-        });
+        self.renderWrappedCommentText(renderer, fonts.regular, comment.text, comment_color, alpha, text_x, text_y, max_w, line_height_px, wrap_cols);
 
         // Delete button "x"
         self.renderCommentDeleteBtn(host, renderer, del_btn, comment_idx);
     }
 
     fn commentButtonRects(self: *DiffOverlayComponent, host: *const types.UiHost, rect: geom.Rect, scaled_line_h: c_int, scroll_int: c_int, content_top: c_int, target_row: usize) struct { submit: geom.Rect, cancel: geom.Rect } {
-        const total_h = dpi.scale(editing_comment_height, host.ui_scale);
+        const editing_text = if (self.editing) |ed| ed.input_buf.items else "";
+        const layout = self.editingCommentLayoutForText(host, rect, editing_text);
+        const total_h = layout.total_h;
         const btn_h = dpi.scale(comment_button_height, host.ui_scale);
         const btn_w = dpi.scale(comment_button_width, host.ui_scale);
         const scaled_padding = dpi.scale(FullscreenOverlay.text_padding, host.ui_scale);
 
-        const comment_y_base = self.computeRowY(target_row, scaled_line_h, host.ui_scale, host.now_ms) + scaled_line_h;
+        const comment_y_base = self.computeRowY(host, rect, target_row, scaled_line_h) + scaled_line_h;
         var saved_h: c_int = 0;
         for (self.comments.items) |comment| {
             if (comment.sent) continue;
             if (comment.display_row_index) |dri| {
                 if (dri == target_row) {
-                    saved_h += dpi.scale(saved_comment_height, host.ui_scale);
+                    saved_h += self.savedCommentHeightForComment(host, rect, comment);
                 }
             }
         }
@@ -2845,9 +3084,10 @@ pub const DiffOverlayComponent = struct {
 
     fn renderEditingComment(self: *DiffOverlayComponent, host: *const types.UiHost, renderer: *c.SDL_Renderer, assets: *types.UiAssets, rect: geom.Rect, y_pos: c_int) void {
         const ed = self.editing orelse return;
-        const total_h = dpi.scale(editing_comment_height, host.ui_scale);
+        const layout = self.editingCommentLayoutForText(host, rect, ed.input_buf.items);
+        const total_h = layout.total_h;
         const scaled_padding = dpi.scale(FullscreenOverlay.text_padding, host.ui_scale);
-        const input_h = dpi.scale(comment_input_height, host.ui_scale);
+        const input_h = layout.input_h;
         const btn_h = dpi.scale(comment_button_height, host.ui_scale);
         const btn_w = dpi.scale(comment_button_width, host.ui_scale);
         const alpha = self.overlay.render_alpha;
@@ -2891,37 +3131,22 @@ pub const DiffOverlayComponent = struct {
         const font_cache = assets.font_cache orelse return;
         const scaled_font_size = dpi.scale(font_size, host.ui_scale);
         const fonts = font_cache.get(scaled_font_size) catch return;
+        const text_x = input_x + dpi.scale(4, host.ui_scale);
+        const text_y = input_y + dpi.scale(4, host.ui_scale);
+        const max_text_w = editingCommentTextWidth(host, rect);
+        const line_height_px = self.lineHeight(host);
 
-        if (ed.input_buf.items.len > 0) {
-            const display_text = if (ed.input_buf.items.len > 500) ed.input_buf.items[0..500] else ed.input_buf.items;
-            const tex = self.makeTextTexture(renderer, fonts.regular, display_text, host.theme.foreground) catch return;
-            defer c.SDL_DestroyTexture(tex.tex);
-            _ = c.SDL_SetTextureAlphaMod(tex.tex, @intFromFloat(255.0 * alpha));
-            const text_y = input_y + dpi.scale(4, host.ui_scale);
-            const max_text_w = input_w - dpi.scale(8, host.ui_scale);
-            const render_w = @min(tex.w, max_text_w);
-            _ = c.SDL_RenderTexture(renderer, tex.tex, null, &c.SDL_FRect{
-                .x = @floatFromInt(input_x + dpi.scale(4, host.ui_scale)),
-                .y = @floatFromInt(text_y),
-                .w = @floatFromInt(render_w),
-                .h = @floatFromInt(tex.h),
-            });
-        }
+        self.renderWrappedCommentText(renderer, fonts.regular, ed.input_buf.items, host.theme.foreground, alpha, text_x, text_y, max_text_w, line_height_px, layout.wrap_cols);
 
         // Blinking cursor
         const blink_ms = host.now_ms - ed.cursor_blink_start_ms;
         const show_cursor = @mod(@divFloor(blink_ms, 500), 2) == 0;
         if (show_cursor) {
-            var cursor_x = input_x + dpi.scale(4, host.ui_scale);
-            if (ed.input_buf.items.len > 0) {
-                const display_text = if (ed.input_buf.items.len > 500) ed.input_buf.items[0..500] else ed.input_buf.items;
-                if (self.makeTextTexture(renderer, fonts.regular, display_text, host.theme.foreground)) |tex| {
-                    cursor_x += tex.w;
-                    c.SDL_DestroyTexture(tex.tex);
-                } else |_| {}
-            }
-            const cursor_top = input_y + dpi.scale(4, host.ui_scale);
+            const cursor_layout = wrappedCommentCursorLayout(ed.input_buf.items, layout.wrap_cols);
+            const cursor_line = ed.input_buf.items[cursor_layout.line_start..cursor_layout.line_end];
+            const cursor_x = text_x + measureTextWidth(fonts.regular, cursor_line);
             const cursor_h = scaled_font_size + dpi.scale(4, host.ui_scale);
+            const cursor_top = text_y + @as(c_int, @intCast(cursor_layout.line_index)) * line_height_px + @divFloor(line_height_px - cursor_h, 2);
             const fg = host.theme.foreground;
             _ = c.SDL_SetRenderDrawColor(renderer, fg.r, fg.g, fg.b, @intFromFloat(200.0 * alpha));
             _ = c.SDL_RenderLine(
@@ -2977,14 +3202,15 @@ pub const DiffOverlayComponent = struct {
 
     fn renderEditingCommentAnimated(self: *DiffOverlayComponent, host: *const types.UiHost, renderer: *c.SDL_Renderer, assets: *types.UiAssets, rect: geom.Rect, y_pos: c_int, progress: f32, is_closing: bool) void {
         const ed = self.editing orelse return;
-        const full_h = dpi.scale(editing_comment_height, host.ui_scale);
+        const layout = self.editingCommentLayoutForText(host, rect, ed.input_buf.items);
+        const full_h = layout.total_h;
         const anim_alpha = if (is_closing) 1.0 - progress else progress;
         const anim_h_f: f32 = @as(f32, @floatFromInt(full_h)) * anim_alpha;
         const anim_h: c_int = @intFromFloat(anim_h_f);
         if (anim_h <= 0) return;
 
         const scaled_padding = dpi.scale(FullscreenOverlay.text_padding, host.ui_scale);
-        const input_h = dpi.scale(comment_input_height, host.ui_scale);
+        const input_h = layout.input_h;
         const alpha = self.overlay.render_alpha * anim_alpha;
 
         _ = c.SDL_SetRenderDrawBlendMode(renderer, c.SDL_BLENDMODE_BLEND);
@@ -3042,23 +3268,11 @@ pub const DiffOverlayComponent = struct {
             _ = c.SDL_SetRenderClipRect(renderer, &prev_clip);
             return;
         };
+        const text_x = input_x + dpi.scale(4, host.ui_scale);
+        const text_y = input_y + dpi.scale(4, host.ui_scale);
+        const line_height_px = self.lineHeight(host);
 
-        if (ed.input_buf.items.len > 0) {
-            const display_text = if (ed.input_buf.items.len > 500) ed.input_buf.items[0..500] else ed.input_buf.items;
-            if (self.makeTextTexture(renderer, fonts.regular, display_text, host.theme.foreground)) |tex| {
-                defer c.SDL_DestroyTexture(tex.tex);
-                _ = c.SDL_SetTextureAlphaMod(tex.tex, @intFromFloat(255.0 * alpha));
-                const text_y = input_y + dpi.scale(4, host.ui_scale);
-                const max_text_w = input_w - dpi.scale(8, host.ui_scale);
-                const render_w = @min(tex.w, max_text_w);
-                _ = c.SDL_RenderTexture(renderer, tex.tex, null, &c.SDL_FRect{
-                    .x = @floatFromInt(input_x + dpi.scale(4, host.ui_scale)),
-                    .y = @floatFromInt(text_y),
-                    .w = @floatFromInt(render_w),
-                    .h = @floatFromInt(tex.h),
-                });
-            } else |_| {}
-        }
+        self.renderWrappedCommentText(renderer, fonts.regular, ed.input_buf.items, host.theme.foreground, alpha, text_x, text_y, editingCommentTextWidth(host, rect), line_height_px, layout.wrap_cols);
 
         // Buttons
         const btn_h = dpi.scale(comment_button_height, host.ui_scale);
@@ -3099,8 +3313,9 @@ pub const DiffOverlayComponent = struct {
     }
 
     fn renderSubmitMorph(self: *DiffOverlayComponent, host: *const types.UiHost, renderer: *c.SDL_Renderer, assets: *types.UiAssets, rect: geom.Rect, y_pos: c_int, comment: DiffComment, progress: f32) void {
-        const full_edit_h = dpi.scale(editing_comment_height, host.ui_scale);
-        const full_saved_h = dpi.scale(saved_comment_height, host.ui_scale);
+        const edit_layout = self.editingCommentLayoutForText(host, rect, comment.text);
+        const full_edit_h = edit_layout.total_h;
+        const full_saved_h = self.savedCommentHeightForComment(host, rect, comment);
         const edit_h_f: f32 = @floatFromInt(full_edit_h);
         const saved_h_f: f32 = @floatFromInt(full_saved_h);
         const morph_h: c_int = @intFromFloat(edit_h_f + (saved_h_f - edit_h_f) * progress);
@@ -3162,25 +3377,25 @@ pub const DiffOverlayComponent = struct {
 
         // Crossfade text: fade out editing text (from submit_anim_text), fade in saved comment text
         const text_x = rect.x + scaled_padding + accent_w + dpi.scale(4, host.ui_scale);
-        const max_w = rect.w - scaled_padding * 2 - accent_w - dpi.scale(8, host.ui_scale);
+        const edit_text_y = y_pos + dpi.scale(8, host.ui_scale);
+        const saved_text_y = y_pos + dpi.scale(4, host.ui_scale);
 
         // Fading out: input text (first half fades faster)
         const fade_out = @max(0.0, 1.0 - progress * 2.0);
         if (fade_out > 0.01) {
             if (self.submit_anim_text) |anim_text| {
-                const display_text = if (anim_text.len > 500) anim_text[0..500] else anim_text;
-                if (self.makeTextTexture(renderer, fonts.regular, display_text, host.theme.foreground)) |tex| {
-                    defer c.SDL_DestroyTexture(tex.tex);
-                    _ = c.SDL_SetTextureAlphaMod(tex.tex, @intFromFloat(255.0 * alpha * fade_out));
-                    const text_y = y_pos + @divFloor(morph_h - tex.h, 2);
-                    const render_w = @min(tex.w, max_w);
-                    _ = c.SDL_RenderTexture(renderer, tex.tex, null, &c.SDL_FRect{
-                        .x = @floatFromInt(text_x),
-                        .y = @floatFromInt(text_y),
-                        .w = @floatFromInt(render_w),
-                        .h = @floatFromInt(tex.h),
-                    });
-                } else |_| {}
+                self.renderWrappedCommentText(
+                    renderer,
+                    fonts.regular,
+                    anim_text,
+                    host.theme.foreground,
+                    alpha * fade_out,
+                    text_x,
+                    edit_text_y,
+                    editingCommentTextWidth(host, rect),
+                    self.lineHeight(host),
+                    edit_layout.wrap_cols,
+                );
             }
         }
 
@@ -3188,30 +3403,33 @@ pub const DiffOverlayComponent = struct {
         const fade_in = @max(0.0, progress * 2.0 - 1.0);
         if (fade_in > 0.01) {
             const comment_color = c.SDL_Color{ .r = 230, .g = 200, .b = 110, .a = 255 };
-            const display_text = if (comment.text.len > 200) comment.text[0..200] else comment.text;
-            if (self.makeTextTexture(renderer, fonts.regular, display_text, comment_color)) |tex| {
-                defer c.SDL_DestroyTexture(tex.tex);
-                _ = c.SDL_SetTextureAlphaMod(tex.tex, @intFromFloat(255.0 * alpha * fade_in));
-                const text_y = y_pos + @divFloor(morph_h - tex.h, 2);
-                const render_w = @min(tex.w, max_w);
-                _ = c.SDL_RenderTexture(renderer, tex.tex, null, &c.SDL_FRect{
-                    .x = @floatFromInt(text_x),
-                    .y = @floatFromInt(text_y),
-                    .w = @floatFromInt(render_w),
-                    .h = @floatFromInt(tex.h),
-                });
-            } else |_| {}
+            self.renderWrappedCommentText(
+                renderer,
+                fonts.regular,
+                comment.text,
+                comment_color,
+                alpha * fade_in,
+                text_x,
+                saved_text_y,
+                savedCommentTextWidth(host, rect),
+                self.lineHeight(host),
+                self.commentWrapColsForWidth(host, savedCommentTextWidth(host, rect)),
+            );
         }
 
         _ = c.SDL_SetRenderClipRect(renderer, &morph_prev_clip);
     }
 
     fn renderSavedCommentWithGlow(self: *DiffOverlayComponent, host: *const types.UiHost, renderer: *c.SDL_Renderer, assets: *types.UiAssets, rect: geom.Rect, y_pos: c_int, comment: DiffComment, glow_progress: f32, comment_idx: usize) void {
-        const comment_h = dpi.scale(saved_comment_height, host.ui_scale);
+        const comment_h = self.savedCommentHeightForComment(host, rect, comment);
         const scaled_padding = dpi.scale(FullscreenOverlay.text_padding, host.ui_scale);
         const accent_w = dpi.scale(4, host.ui_scale);
         const alpha = self.overlay.render_alpha;
-        const del_btn = commentDeleteBtnRect(host, rect, y_pos);
+        const text_x = rect.x + scaled_padding + accent_w + dpi.scale(4, host.ui_scale);
+        const text_y = y_pos + dpi.scale(4, host.ui_scale);
+        const max_w = savedCommentTextWidth(host, rect);
+        const wrap_cols = self.commentWrapColsForWidth(host, max_w);
+        const del_btn = commentDeleteBtnRect(host, rect, y_pos, comment_h);
 
         // Glow effect: pulse peaks at the start and fades out
         const glow = (1.0 - glow_progress) * (1.0 - glow_progress);
@@ -3257,21 +3475,7 @@ pub const DiffOverlayComponent = struct {
         const fonts = font_cache.get(scaled_font_size) catch return;
 
         const comment_color = c.SDL_Color{ .r = 230, .g = 200, .b = 110, .a = 255 };
-        const display_text = if (comment.text.len > 200) comment.text[0..200] else comment.text;
-        const tex = self.makeTextTexture(renderer, fonts.regular, display_text, comment_color) catch return;
-        defer c.SDL_DestroyTexture(tex.tex);
-        _ = c.SDL_SetTextureAlphaMod(tex.tex, @intFromFloat(255.0 * alpha));
-        const text_x = rect.x + scaled_padding + accent_w + dpi.scale(4, host.ui_scale);
-        const text_y = y_pos + @divFloor(comment_h - tex.h, 2);
-        const del_space = dpi.scale(comment_delete_btn_size + 16, host.ui_scale);
-        const max_w = rect.w - scaled_padding * 2 - accent_w - dpi.scale(8, host.ui_scale) - del_space;
-        const render_w = @min(tex.w, max_w);
-        _ = c.SDL_RenderTexture(renderer, tex.tex, null, &c.SDL_FRect{
-            .x = @floatFromInt(text_x),
-            .y = @floatFromInt(text_y),
-            .w = @floatFromInt(render_w),
-            .h = @floatFromInt(tex.h),
-        });
+        self.renderWrappedCommentText(renderer, fonts.regular, comment.text, comment_color, alpha, text_x, text_y, max_w, self.lineHeight(host), wrap_cols);
 
         // Delete button "x"
         self.renderCommentDeleteBtn(host, renderer, del_btn, comment_idx);
@@ -3418,3 +3622,19 @@ pub const DiffOverlayComponent = struct {
         .wantsFrame = wantsFrameFn,
     };
 };
+
+test "wrapped diff comments expand beyond single-line minimum heights" {
+    const long_comment =
+        "This diff comment should wrap across multiple lines instead of shrinking to fit into one line.";
+    const wrap_cols = 18;
+    const line_count = DiffOverlayComponent.wrappedCommentLineCount(long_comment, wrap_cols);
+
+    try std.testing.expect(line_count > 1);
+
+    const saved_h = DiffOverlayComponent.savedCommentHeightForLineCount(1.0, 22, line_count);
+    try std.testing.expect(saved_h > DiffOverlayComponent.saved_comment_min_height);
+
+    const editing_layout = DiffOverlayComponent.editingCommentLayoutForLineCount(1.0, 22, line_count);
+    try std.testing.expect(editing_layout.input_h > DiffOverlayComponent.comment_input_min_height);
+    try std.testing.expect(editing_layout.total_h > DiffOverlayComponent.editing_comment_min_height);
+}
