@@ -3,6 +3,7 @@ const builtin = @import("builtin");
 const c = @import("../c.zig");
 
 const is_macos = builtin.os.tag == .macos;
+const log = std.log.scoped(.sdl);
 
 pub const WindowPosition = struct { x: c_int, y: c_int };
 
@@ -138,7 +139,9 @@ pub fn waitEventTimeout(timeout_ms: c_int) ?c.SDL_Event {
 pub fn pushWakeEvent(platform_handle: *const Platform) void {
     var event = std.mem.zeroes(c.SDL_Event);
     event.user.type = platform_handle.wake_event_type;
-    _ = c.SDL_PushEvent(&event);
+    if (!c.SDL_PushEvent(&event)) {
+        log.err("failed to push runtime wake event: {s}", .{c.SDL_GetError()});
+    }
 }
 
 pub fn isWakeEvent(platform_handle: *const Platform, event: *const c.SDL_Event) bool {

@@ -71,6 +71,37 @@ pub const RuntimeWake = struct {
     }
 };
 
+fn notificationSessionId(note: Notification) usize {
+    return switch (note) {
+        .status => |s| s.session,
+        .story => |s| s.session,
+    };
+}
+
+fn releaseNotification(allocator: std.mem.Allocator, note: Notification) void {
+    switch (note) {
+        .story => |s| allocator.free(s.path),
+        .status => {},
+    }
+}
+
+fn enqueueNotification(
+    allocator: std.mem.Allocator,
+    queue: *NotificationQueue,
+    runtime_wake: ?RuntimeWake,
+    note: Notification,
+) void {
+    queue.push(allocator, note) catch |err| {
+        log.warn("failed to queue notification for session {d}: {}", .{ notificationSessionId(note), err });
+        releaseNotification(allocator, note);
+        return;
+    };
+
+    if (runtime_wake) |waker| {
+        waker.notify();
+    }
+}
+
 pub const StartNotifyThreadError = std.Thread.SpawnError;
 
 pub fn startNotifyThread(
@@ -138,25 +169,6 @@ pub fn startNotifyThread(
                 .session = session_idx,
                 .state = state,
             } };
-        }
-
-        fn enqueueNotification(ctx: NotifyContext, note: Notification) void {
-            ctx.queue.push(ctx.allocator, note) catch |err| {
-                const session_id = switch (note) {
-                    .status => |s| s.session,
-                    .story => |s| s.session,
-                };
-                log.warn("failed to queue notification for session {d}: {}", .{ session_id, err });
-                switch (note) {
-                    .story => |s| ctx.allocator.free(s.path),
-                    .status => {},
-                }
-                return;
-            };
-
-            if (ctx.runtime_wake) |waker| {
-                waker.notify();
-            }
         }
 
         fn run(ctx: NotifyContext) !void {
@@ -232,7 +244,7 @@ pub fn startNotifyThread(
                 if (buffer.items.len == 0) continue;
 
                 if (parseNotification(buffer.items, ctx.allocator)) |note| {
-                    enqueueNotification(ctx, note);
+                    enqueueNotification(ctx.allocator, ctx.queue, ctx.runtime_wake, note);
                 }
             }
         }
@@ -266,7 +278,7 @@ test "NotificationQueue - push and drain" {
     try std.testing.expectEqual(Notification{ .status = .{ .session = 2, .state = .done } }, items.items[2]);
 }
 
-test "RuntimeWake notifies after notification is queued" {
+test "enqueueNotification wakes after queueing" {
     const allocator = std.testing.allocator;
 
     var queue = NotificationQueue{};
@@ -285,8 +297,12 @@ test "RuntimeWake notifies after notification is queued" {
         .callback = TestWake.onWake,
     };
 
-    try queue.push(allocator, .{ .status = .{ .session = 7, .state = .done } });
-    wake.notify();
+    enqueueNotification(
+        allocator,
+        &queue,
+        wake,
+        .{ .status = .{ .session = 7, .state = .done } },
+    );
 
     var items = queue.drainAll();
     defer items.deinit(allocator);
@@ -294,4 +310,42 @@ test "RuntimeWake notifies after notification is queued" {
     try std.testing.expectEqual(@as(usize, 1), wake_count);
     try std.testing.expectEqual(@as(usize, 1), items.items.len);
     try std.testing.expectEqual(Notification{ .status = .{ .session = 7, .state = .done } }, items.items[0]);
+}
+
+test "enqueueNotification skips wake when queueing fails" {
+    var buffer: [128]u8 = undefined;
+    var fba = std.heap.FixedBufferAllocator.init(&buffer);
+    const allocator = fba.allocator();
+
+    var queue = NotificationQueue{};
+    defer queue.deinit(allocator);
+
+    const TestWake = struct {
+        fn onWake(context: ?*anyopaque) void {
+            const counter = @as(*usize, @ptrCast(@alignCast(context orelse return)));
+            counter.* += 1;
+        }
+    };
+
+    var wake_count: usize = 0;
+    const wake = RuntimeWake{
+        .context = &wake_count,
+        .callback = TestWake.onWake,
+    };
+
+    while (true) {
+        queue.push(allocator, .{ .status = .{ .session = 1, .state = .running } }) catch break;
+    }
+
+    enqueueNotification(
+        allocator,
+        &queue,
+        wake,
+        .{ .status = .{ .session = 7, .state = .done } },
+    );
+
+    var items = queue.drainAll();
+    defer items.deinit(allocator);
+
+    try std.testing.expectEqual(@as(usize, 0), wake_count);
 }

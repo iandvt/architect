@@ -105,8 +105,9 @@ fn remainingFrameBudgetNs(target_frame_ns: i128, frame_ns: i128) u64 {
 }
 
 fn waitTimeoutMsFromNs(remaining_ns: u64) c_int {
-    const timeout_ms = remaining_ns / std.time.ns_per_ms;
-    if (timeout_ms == 0) return 0;
+    if (remaining_ns == 0) return 0;
+
+    const timeout_ms = 1 + @divFloor(remaining_ns - 1, std.time.ns_per_ms);
 
     const max_timeout_ms: u64 = @intCast(std.math.maxInt(c_int));
     return @intCast(@min(timeout_ms, max_timeout_ms));
@@ -2798,9 +2799,10 @@ fn allocZ(allocator: std.mem.Allocator, data: []const u8) ![]u8 {
     return buf;
 }
 
-test "waitTimeoutMsFromNs truncates to whole milliseconds" {
-    try std.testing.expectEqual(@as(c_int, 0), waitTimeoutMsFromNs(std.time.ns_per_ms - 1));
-    try std.testing.expectEqual(@as(c_int, 49), waitTimeoutMsFromNs((49 * std.time.ns_per_ms) + 999_999));
+test "waitTimeoutMsFromNs rounds up to whole milliseconds" {
+    try std.testing.expectEqual(@as(c_int, 0), waitTimeoutMsFromNs(0));
+    try std.testing.expectEqual(@as(c_int, 1), waitTimeoutMsFromNs(std.time.ns_per_ms - 1));
+    try std.testing.expectEqual(@as(c_int, 50), waitTimeoutMsFromNs((49 * std.time.ns_per_ms) + 999_999));
 }
 
 test "computeFrameWaitDecision returns idle wait while idle" {
