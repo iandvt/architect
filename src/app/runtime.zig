@@ -55,6 +55,12 @@ const SessionViewState = view_state.SessionViewState;
 const GridLayout = grid_layout.GridLayout;
 const SessionMove = grid_layout.SessionMove;
 
+const FrameWaitDecision = union(enum) {
+    none,
+    idle_wait_ms: c_int,
+    active_sleep_ns: u64,
+};
+
 const ForegroundProcessCache = struct {
     session_idx: ?usize = null,
     last_check_ms: i64 = 0,
@@ -91,6 +97,42 @@ fn countSpawnedSessions(sessions: []const *SessionState) usize {
         if (session.spawned) count += 1;
     }
     return count;
+}
+
+fn remainingFrameBudgetNs(target_frame_ns: i128, frame_ns: i128) u64 {
+    if (frame_ns >= target_frame_ns) return 0;
+    return @intCast(target_frame_ns - frame_ns);
+}
+
+fn waitTimeoutMsFromNs(remaining_ns: u64) c_int {
+    if (remaining_ns == 0) return 0;
+
+    const timeout_ms = 1 + @divFloor(remaining_ns - 1, std.time.ns_per_ms);
+
+    const max_timeout_ms: u64 = @intCast(std.math.maxInt(c_int));
+    return @intCast(@min(timeout_ms, max_timeout_ms));
+}
+
+fn computeFrameWaitDecision(is_idle: bool, vsync_enabled: bool, frame_ns: i128) FrameWaitDecision {
+    if (is_idle) {
+        const timeout_ms = waitTimeoutMsFromNs(remainingFrameBudgetNs(idle_frame_ns, frame_ns));
+        return if (timeout_ms > 0) .{ .idle_wait_ms = timeout_ms } else .none;
+    }
+    if (vsync_enabled) return .none;
+
+    const sleep_ns = remainingFrameBudgetNs(active_frame_ns, frame_ns);
+    return if (sleep_ns > 0) .{ .active_sleep_ns = sleep_ns } else .none;
+}
+
+fn waitForNextFrame(wait_decision: FrameWaitDecision) ?c.SDL_Event {
+    return switch (wait_decision) {
+        .none => null,
+        .idle_wait_ms => |timeout_ms| platform.waitEventTimeout(timeout_ms),
+        .active_sleep_ns => |sleep_ns| blk: {
+            std.Thread.sleep(sleep_ns);
+            break :blk null;
+        },
+    };
 }
 
 fn writeRuntimeEvent(message: []const u8, event_name: []const u8, extra_data: []const u8) void {
@@ -863,11 +905,6 @@ pub fn run() !void {
     defer allocator.free(notify_sock);
 
     var notify_stop = std.atomic.Value(bool).init(false);
-    const notify_thread = try notify.startNotifyThread(allocator, notify_sock, &notify_queue, &notify_stop);
-    defer {
-        notify_stop.store(true, .seq_cst);
-        notify_thread.join();
-    }
 
     var config = config_mod.Config.load(allocator) catch |err| blk: {
         if (err == error.ConfigNotFound) {
@@ -963,6 +1000,20 @@ pub fn run() !void {
     defer platform.deinit(&sdl);
     platform.startTextInput(sdl.window);
     defer platform.stopTextInput(sdl.window);
+    const notify_thread = try notify.startNotifyThread(
+        allocator,
+        notify_sock,
+        &notify_queue,
+        &notify_stop,
+        .{
+            .context = &sdl,
+            .callback = platform.pushWakeEventFromOpaque,
+        },
+    );
+    defer {
+        notify_stop.store(true, .seq_cst);
+        notify_thread.join();
+    }
     var text_input_active = true;
     var input_source_tracker = macos_input.InputSourceTracker.init();
     defer input_source_tracker.deinit();
@@ -1218,10 +1269,13 @@ pub fn run() !void {
     const story_overlay_component = try ui_mod.story_overlay.StoryOverlayComponent.init(allocator);
     try ui.register(story_overlay_component.asComponent());
 
-    // Main loop: handle SDL input, feed PTY output into terminals, apply async
-    // notifications, drive animations, and render at ~60 FPS.
+    // Main loop: optionally wait for the next wake-worthy event, then handle SDL
+    // input, feed PTY output into terminals, apply async notifications, drive
+    // animations, and render at the current cadence.
     var last_render_ns: i128 = 0;
+    var next_frame_wait: FrameWaitDecision = .none;
     while (running) {
+        var next_event = waitForNextFrame(next_frame_wait);
         const frame_start_ns: i128 = std.time.nanoTimestamp();
         const now = std.time.milliTimestamp();
         if (relaunch_trace_frames > 0) {
@@ -1235,7 +1289,14 @@ pub fn run() !void {
 
         var event: c.SDL_Event = undefined;
         var processed_event = false;
-        while (c.SDL_PollEvent(&event)) {
+        while (true) {
+            if (next_event) |ready_event| {
+                event = ready_event;
+                next_event = null;
+            } else if (!c.SDL_PollEvent(&event)) {
+                break;
+            }
+            if (platform.isWakeEvent(&sdl, &event)) continue;
             if (anim_state.focused_session != last_focused_session) {
                 const previous_session = last_focused_session;
                 input_text.clearImeComposition(sessions[previous_session], &ime_composition) catch |err| {
@@ -2673,22 +2734,14 @@ pub fn run() !void {
         }
 
         const is_idle = !animating and !any_session_dirty and !ui_needs_frame and !processed_event and !had_notifications;
-        // When vsync is enabled and we're active, let vsync handle frame pacing.
-        // When idle, always throttle to save power regardless of vsync.
-        const needs_throttle = is_idle or !sdl.vsync_enabled;
-        if (needs_throttle) {
-            const target_frame_ns: i128 = if (is_idle) idle_frame_ns else active_frame_ns;
-            const frame_end_ns: i128 = std.time.nanoTimestamp();
-            const frame_ns = frame_end_ns - frame_start_ns;
-            if (frame_ns < target_frame_ns) {
-                const sleep_ns: u64 = @intCast(target_frame_ns - frame_ns);
-                std.Thread.sleep(sleep_ns);
-            }
-        }
 
         if (window_close_suppress_countdown > 0) {
             window_close_suppress_countdown -= 1;
         }
+
+        const frame_end_ns: i128 = std.time.nanoTimestamp();
+        const frame_ns = frame_end_ns - frame_start_ns;
+        next_frame_wait = computeFrameWaitDecision(is_idle, sdl.vsync_enabled, frame_ns);
     }
 
     if (builtin.os.tag == .macos) {
@@ -2744,6 +2797,36 @@ fn allocZ(allocator: std.mem.Allocator, data: []const u8) ![]u8 {
     @memcpy(buf[0..data.len], data);
     buf[data.len] = 0;
     return buf;
+}
+
+test "waitTimeoutMsFromNs rounds up to whole milliseconds" {
+    try std.testing.expectEqual(@as(c_int, 0), waitTimeoutMsFromNs(0));
+    try std.testing.expectEqual(@as(c_int, 1), waitTimeoutMsFromNs(std.time.ns_per_ms - 1));
+    try std.testing.expectEqual(@as(c_int, 50), waitTimeoutMsFromNs((49 * std.time.ns_per_ms) + 999_999));
+}
+
+test "computeFrameWaitDecision returns idle wait while idle" {
+    const decision = computeFrameWaitDecision(true, false, 10 * std.time.ns_per_ms);
+    switch (decision) {
+        .idle_wait_ms => |timeout_ms| try std.testing.expectEqual(@as(c_int, 40), timeout_ms),
+        else => try std.testing.expect(false),
+    }
+}
+
+test "computeFrameWaitDecision keeps active pacing without vsync" {
+    const decision = computeFrameWaitDecision(false, false, 5 * std.time.ns_per_ms);
+    switch (decision) {
+        .active_sleep_ns => |sleep_ns| try std.testing.expectEqual(@as(u64, active_frame_ns - (5 * std.time.ns_per_ms)), sleep_ns),
+        else => try std.testing.expect(false),
+    }
+}
+
+test "computeFrameWaitDecision defers to vsync while active" {
+    const decision = computeFrameWaitDecision(false, true, 5 * std.time.ns_per_ms);
+    switch (decision) {
+        .none => {},
+        else => try std.testing.expect(false),
+    }
 }
 
 test "markTeardownComplete returns true only once" {

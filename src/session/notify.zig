@@ -59,7 +59,48 @@ const NotifyContext = struct {
     socket_path: [:0]const u8,
     queue: *NotificationQueue,
     stop: *atomic.Value(bool),
+    runtime_wake: ?RuntimeWake,
 };
+
+pub const RuntimeWake = struct {
+    context: ?*anyopaque,
+    callback: *const fn (?*anyopaque) void,
+
+    pub fn notify(self: RuntimeWake) void {
+        self.callback(self.context);
+    }
+};
+
+fn notificationSessionId(note: Notification) usize {
+    return switch (note) {
+        .status => |s| s.session,
+        .story => |s| s.session,
+    };
+}
+
+fn releaseNotification(allocator: std.mem.Allocator, note: Notification) void {
+    switch (note) {
+        .story => |s| allocator.free(s.path),
+        .status => {},
+    }
+}
+
+fn enqueueNotification(
+    allocator: std.mem.Allocator,
+    queue: *NotificationQueue,
+    runtime_wake: ?RuntimeWake,
+    note: Notification,
+) void {
+    queue.push(allocator, note) catch |err| {
+        log.warn("failed to queue notification for session {d}: {}", .{ notificationSessionId(note), err });
+        releaseNotification(allocator, note);
+        return;
+    };
+
+    if (runtime_wake) |waker| {
+        waker.notify();
+    }
+}
 
 pub const StartNotifyThreadError = std.Thread.SpawnError;
 
@@ -68,6 +109,7 @@ pub fn startNotifyThread(
     socket_path: [:0]const u8,
     queue: *NotificationQueue,
     stop: *atomic.Value(bool),
+    runtime_wake: ?RuntimeWake,
 ) StartNotifyThreadError!std.Thread {
     _ = std.posix.unlink(socket_path) catch |err| switch (err) {
         error.FileNotFound => {},
@@ -202,24 +244,19 @@ pub fn startNotifyThread(
                 if (buffer.items.len == 0) continue;
 
                 if (parseNotification(buffer.items, ctx.allocator)) |note| {
-                    ctx.queue.push(ctx.allocator, note) catch |err| {
-                        const session_id = switch (note) {
-                            .status => |s| s.session,
-                            .story => |s| s.session,
-                        };
-                        log.warn("failed to queue notification for session {d}: {}", .{ session_id, err });
-                        // Free heap-allocated data on failure
-                        switch (note) {
-                            .story => |s| ctx.allocator.free(s.path),
-                            .status => {},
-                        }
-                    };
+                    enqueueNotification(ctx.allocator, ctx.queue, ctx.runtime_wake, note);
                 }
             }
         }
     };
 
-    const ctx = NotifyContext{ .allocator = allocator, .socket_path = socket_path, .queue = queue, .stop = stop };
+    const ctx = NotifyContext{
+        .allocator = allocator,
+        .socket_path = socket_path,
+        .queue = queue,
+        .stop = stop,
+        .runtime_wake = runtime_wake,
+    };
     return try std.Thread.spawn(.{}, handler.run, .{ctx});
 }
 
@@ -239,4 +276,76 @@ test "NotificationQueue - push and drain" {
     try std.testing.expectEqual(Notification{ .status = .{ .session = 0, .state = .running } }, items.items[0]);
     try std.testing.expectEqual(Notification{ .status = .{ .session = 1, .state = .awaiting_approval } }, items.items[1]);
     try std.testing.expectEqual(Notification{ .status = .{ .session = 2, .state = .done } }, items.items[2]);
+}
+
+test "enqueueNotification wakes after queueing" {
+    const allocator = std.testing.allocator;
+
+    var queue = NotificationQueue{};
+    defer queue.deinit(allocator);
+
+    const TestWake = struct {
+        fn onWake(context: ?*anyopaque) void {
+            const counter = @as(*usize, @ptrCast(@alignCast(context orelse return)));
+            counter.* += 1;
+        }
+    };
+
+    var wake_count: usize = 0;
+    const wake = RuntimeWake{
+        .context = &wake_count,
+        .callback = TestWake.onWake,
+    };
+
+    enqueueNotification(
+        allocator,
+        &queue,
+        wake,
+        .{ .status = .{ .session = 7, .state = .done } },
+    );
+
+    var items = queue.drainAll();
+    defer items.deinit(allocator);
+
+    try std.testing.expectEqual(@as(usize, 1), wake_count);
+    try std.testing.expectEqual(@as(usize, 1), items.items.len);
+    try std.testing.expectEqual(Notification{ .status = .{ .session = 7, .state = .done } }, items.items[0]);
+}
+
+test "enqueueNotification skips wake when queueing fails" {
+    var buffer: [128]u8 = undefined;
+    var fba = std.heap.FixedBufferAllocator.init(&buffer);
+    const allocator = fba.allocator();
+
+    var queue = NotificationQueue{};
+    defer queue.deinit(allocator);
+
+    const TestWake = struct {
+        fn onWake(context: ?*anyopaque) void {
+            const counter = @as(*usize, @ptrCast(@alignCast(context orelse return)));
+            counter.* += 1;
+        }
+    };
+
+    var wake_count: usize = 0;
+    const wake = RuntimeWake{
+        .context = &wake_count,
+        .callback = TestWake.onWake,
+    };
+
+    while (true) {
+        queue.push(allocator, .{ .status = .{ .session = 1, .state = .running } }) catch break;
+    }
+
+    enqueueNotification(
+        allocator,
+        &queue,
+        wake,
+        .{ .status = .{ .session = 7, .state = .done } },
+    );
+
+    var items = queue.drainAll();
+    defer items.deinit(allocator);
+
+    try std.testing.expectEqual(@as(usize, 0), wake_count);
 }
