@@ -22,12 +22,13 @@ project_root=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
 workaround_root="$project_root/.tmp/macos-sdk-workaround"
 bin_dir="$workaround_root/bin"
 developer_dir="$workaround_root/developer"
+developer_bin_dir="$developer_dir/usr/bin"
 sdk_link="$developer_dir/SDKs/MacOSX.sdk"
 
-mkdir -p "$bin_dir" "$developer_dir/SDKs"
+mkdir -p "$bin_dir" "$developer_dir/SDKs" "$developer_bin_dir"
 ln -sfn "$legacy_sdk" "$sdk_link"
 
-xcrun_wrapper="$bin_dir/xcrun"
+xcrun_wrapper="$developer_bin_dir/xcrun"
 cat > "$xcrun_wrapper" <<EOF
 #!/bin/sh
 
@@ -39,6 +40,7 @@ fi
 exec env DEVELOPER_DIR= /usr/bin/xcrun "\$@"
 EOF
 chmod +x "$xcrun_wrapper"
+ln -sfn "$xcrun_wrapper" "$bin_dir/xcrun"
 
 case ":$PATH:" in
     *":$bin_dir:"*) ;;
