@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const posix = std.posix;
 const atomic = std.atomic;
 
@@ -243,23 +244,66 @@ fn duplicateValidatedString(
 }
 
 pub fn getControlSocketPath(allocator: std.mem.Allocator) ![:0]u8 {
-    const base = runtimeDir();
+    var base = try controlRuntimeDirAlloc(allocator);
+    defer base.deinit(allocator);
+    try ensureControlRuntimeDir(base);
+
     const pid = std.c.getpid();
     const socket_name = try std.fmt.allocPrint(allocator, "architect_control_{d}.sock", .{pid});
     defer allocator.free(socket_name);
-    return try std.fs.path.joinZ(allocator, &.{ base, socket_name });
+    return try std.fs.path.joinZ(allocator, &.{ base.path, socket_name });
 }
 
 pub fn getControlDiscoveryPath(allocator: std.mem.Allocator) ![]u8 {
+    var base = try controlRuntimeDirAlloc(allocator);
+    defer base.deinit(allocator);
+    try ensureControlRuntimeDir(base);
+
     const file_name = try controlDiscoveryFileNameAlloc(allocator);
     defer allocator.free(file_name);
-    return try std.fs.path.join(allocator, &.{ runtimeDir(), file_name });
+    return try std.fs.path.join(allocator, &.{ base.path, file_name });
 }
 
-fn runtimeDir() []const u8 {
-    return std.posix.getenv("XDG_RUNTIME_DIR") orelse
-        std.posix.getenv("TMPDIR") orelse
-        "/tmp";
+const ControlRuntimeDir = struct {
+    path: []u8,
+    managed: bool,
+
+    fn deinit(self: *ControlRuntimeDir, allocator: std.mem.Allocator) void {
+        allocator.free(self.path);
+        self.* = undefined;
+    }
+};
+
+fn controlRuntimeDirAlloc(allocator: std.mem.Allocator) !ControlRuntimeDir {
+    if (std.posix.getenv("XDG_RUNTIME_DIR")) |runtime_dir| {
+        return .{
+            .path = try allocator.dupe(u8, runtime_dir),
+            .managed = false,
+        };
+    }
+
+    return .{
+        .path = try fallbackControlRuntimeDirAlloc(allocator),
+        .managed = true,
+    };
+}
+
+fn fallbackControlRuntimeDirAlloc(allocator: std.mem.Allocator) ![]u8 {
+    if (std.posix.getenv("HOME")) |home| {
+        if (builtin.os.tag == .macos) {
+            return try std.fs.path.join(allocator, &.{ home, "Library", "Caches", "Architect", "runtime" });
+        }
+        return try std.fs.path.join(allocator, &.{ home, ".cache", "architect", "runtime" });
+    }
+
+    return try std.fmt.allocPrint(allocator, "/tmp/architect-{d}", .{posix.getuid()});
+}
+
+fn ensureControlRuntimeDir(runtime_dir: ControlRuntimeDir) !void {
+    if (!runtime_dir.managed) return;
+
+    try std.fs.cwd().makePath(runtime_dir.path);
+    try posix.fchmodat(posix.AT.FDCWD, runtime_dir.path, 0o700, 0);
 }
 
 fn controlDiscoveryFileNameAlloc(allocator: std.mem.Allocator) ![]u8 {
@@ -716,7 +760,10 @@ fn discoverControlCandidates(allocator: std.mem.Allocator) !std.ArrayListUnmanag
         candidates.deinit(allocator);
     }
 
-    var dir = std.fs.openDirAbsolute(runtimeDir(), .{ .iterate = true }) catch |err| switch (err) {
+    var runtime_dir = try controlRuntimeDirAlloc(allocator);
+    defer runtime_dir.deinit(allocator);
+
+    var dir = std.fs.openDirAbsolute(runtime_dir.path, .{ .iterate = true }) catch |err| switch (err) {
         error.FileNotFound => return candidates,
         else => return err,
     };
@@ -905,6 +952,16 @@ test "control discovery file names are scoped to the current user and process" {
     try std.testing.expect(isOwnControlDiscoveryFileName(file_name, prefix));
     try std.testing.expect(!isOwnControlDiscoveryFileName("architect_control.json", prefix));
     try std.testing.expect(!isOwnControlDiscoveryFileName("not_architect_control_1_2.json", prefix));
+}
+
+test "fallback control runtime directory does not use TMPDIR" {
+    const allocator = std.testing.allocator;
+
+    const path = try fallbackControlRuntimeDirAlloc(allocator);
+    defer allocator.free(path);
+
+    try std.testing.expect(std.mem.indexOf(u8, path, "architect") != null);
+    try std.testing.expect(std.mem.indexOf(u8, path, "nix-shell.") == null);
 }
 
 test "newestDiscoveryCandidateIndex picks the highest mtime" {
