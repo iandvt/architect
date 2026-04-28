@@ -163,8 +163,36 @@ remove_signature_if_present() {
     fi
 }
 
+nix_deps_for() {
+    local file="$1"
+    otool -L "$file" | awk '/^[[:space:]]/ {print $1}' | grep '^/nix/store' || true
+}
+
+patch_binary_deps() {
+    local binary="$1"
+    local label="$2"
+    local deps original name
+
+    deps=$(nix_deps_for "$binary")
+    if [[ -z "$deps" ]]; then
+        echo "No Nix store dependencies found in $label"
+        return
+    fi
+
+    while IFS= read -r original; do
+        [[ -z "$original" ]] && continue
+        name=$(basename "$original")
+        install_name_tool -change "$original" "@executable_path/lib/$name" "$binary"
+    done <<< "$deps"
+}
+
 echo "Analyzing dynamic library dependencies..."
-initial_deps=$(otool -L "$EXECUTABLE" | awk '/^[[:space:]]/ {print $1}' | grep '^/nix/store' || true)
+initial_deps=$(
+    {
+        nix_deps_for "$EXECUTABLE"
+        nix_deps_for "$MCP_EXECUTABLE"
+    } | sort -u
+)
 
 # Use a flag instead of early return: bundling must still finish even without Nix deps
 skip_lib_patching=false
@@ -205,7 +233,7 @@ if [[ "$skip_lib_patching" != true ]]; then
 
         install_name_tool -id "@executable_path/lib/$lib_name" "$dest"
 
-        nested_list=$(otool -L "$lib_path" | awk '/^[[:space:]]/ {print $1}' | grep '^/nix/store' || true)
+        nested_list=$(nix_deps_for "$lib_path")
         while IFS= read -r nested_dep; do
             [[ -z "$nested_dep" ]] && continue
             nested_name=$(basename "$nested_dep")
@@ -214,12 +242,8 @@ if [[ "$skip_lib_patching" != true ]]; then
         done <<< "$nested_list"
     done
 
-    while IFS= read -r original; do
-        [[ -z "$original" ]] && continue
-        name=$(basename "$original")
-        install_name_tool -change "$original" "@executable_path/lib/$name" "$MACOS_DIR/architect" || true
-        install_name_tool -change "$original" "@executable_path/lib/$name" "$MACOS_DIR/architect-mcp" || true
-    done <<< "$seen_list"
+    patch_binary_deps "$MACOS_DIR/architect" "architect"
+    patch_binary_deps "$MACOS_DIR/architect-mcp" "architect-mcp"
 
     echo ""
     echo "Verifying final dependencies..."
