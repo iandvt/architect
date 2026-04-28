@@ -74,6 +74,9 @@ pub fn build(b: *std.Build) void {
     mcp_exe.linkLibC();
 
     if (target.result.os.tag == .macos) {
+        exe.headerpad_max_install_names = true;
+        mcp_exe.headerpad_max_install_names = true;
+
         exe.linkSystemLibrary("proc");
         exe.linkFramework("Carbon");
         exe.linkFramework("CoreFoundation");
