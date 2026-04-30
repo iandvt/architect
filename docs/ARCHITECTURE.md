@@ -95,6 +95,7 @@ Platform    Session    Rendering    UI Overlay
 - Runtime persistence is updated during the frame loop when runtime state changes (cwd changes, terminal spawn/despawn, window move/resize, font size changes), and finalization is explicit at the end of `app/runtime.zig`: final save and deinit `Persistence` before deferred subsystem teardown begins.
 - Font reload paths are transactional: acquire both replacement fonts first, then swap and destroy old fonts, so a partial reload failure cannot leave deinit hooks pointing at already-freed font resources.
 - Window-resize scale handling follows a single ordered path (`reload-if-needed`, then `resize`) to keep behavior consistent between changed-scale and unchanged-scale events.
+- Terminal resizes preserve the existing screen contents. Architect temporarily disables ghostty-vt semantic-prompt redraw clearing while applying its own PTY/terminal size updates, so layout changes do not erase agent prompt/input rows.
 - Shared Utilities (`geom`, `colors`, `dpi`, `config`, `logging`, `metrics`, etc.) may be imported by any layer but never import from layers above them.
 - **Exception:** `app/*` modules may import `c.zig` directly for SDL type definitions used in input handling. This is a pragmatic shortcut for FFI constants, not a general license to depend on the Platform layer.
 

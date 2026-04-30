@@ -2,6 +2,7 @@ const std = @import("std");
 const app_state = @import("app_state.zig");
 const c = @import("../c.zig");
 const font_mod = @import("../font.zig");
+const ghostty_vt = @import("ghostty-vt");
 const pty_mod = @import("../pty.zig");
 const renderer_mod = @import("../render/renderer.zig");
 const dpi = @import("../dpi.zig");
@@ -165,7 +166,7 @@ pub fn applyTerminalResize(
                 std.debug.print("Failed to resize PTY for session {d}: {}\n", .{ session.id, err });
             };
 
-            terminal.resize(allocator, cols, rows) catch |err| {
+            resizeTerminalPreservingPrompt(allocator, terminal, cols, rows) catch |err| {
                 std.debug.print("Failed to resize terminal for session {d}: {}\n", .{ session.id, err });
                 continue;
             };
@@ -180,4 +181,47 @@ pub fn applyTerminalResize(
             session.markDirty();
         }
     }
+}
+
+fn resizeTerminalPreservingPrompt(
+    allocator: std.mem.Allocator,
+    terminal: *ghostty_vt.Terminal,
+    cols: u16,
+    rows: u16,
+) !void {
+    const prompt_redraw = terminal.flags.shell_redraws_prompt;
+    terminal.flags.shell_redraws_prompt = .false;
+    defer terminal.flags.shell_redraws_prompt = prompt_redraw;
+
+    try terminal.resize(allocator, cols, rows);
+}
+
+test "terminal resize preserves semantic prompt contents" {
+    const allocator = std.testing.allocator;
+
+    var terminal = try ghostty_vt.Terminal.init(allocator, .{
+        .cols = 10,
+        .rows = 3,
+        .max_scrollback = 5,
+    });
+    defer terminal.deinit(allocator);
+
+    const screen = terminal.screens.active;
+    try screen.testWriteString("ABCDE\n");
+    screen.cursorSetSemanticContent(.{ .prompt = .initial });
+    try screen.testWriteString("> ");
+    screen.cursorSetSemanticContent(.{ .input = .clear_eol });
+    try screen.testWriteString("echo");
+
+    const before = try terminal.plainString(allocator);
+    defer allocator.free(before);
+    try std.testing.expectEqualStrings("ABCDE\n> echo", before);
+
+    const prompt_redraw = terminal.flags.shell_redraws_prompt;
+    try resizeTerminalPreservingPrompt(allocator, &terminal, 20, 3);
+    try std.testing.expectEqual(prompt_redraw, terminal.flags.shell_redraws_prompt);
+
+    const after = try terminal.plainString(allocator);
+    defer allocator.free(after);
+    try std.testing.expectEqualStrings("ABCDE\n> echo", after);
 }
