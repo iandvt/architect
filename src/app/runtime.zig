@@ -30,6 +30,7 @@ const colors_mod = @import("../colors.zig");
 const ui_mod = @import("../ui/mod.zig");
 const font_cache_mod = @import("../font_cache.zig");
 const c = @import("../c.zig");
+const dpi = @import("../dpi.zig");
 const metrics_mod = @import("../metrics.zig");
 const open_url = @import("../os/open.zig");
 const terminal_history = @import("terminal_history.zig");
@@ -287,7 +288,7 @@ fn agentProcessStarted(session: *const SessionState) bool {
 
 fn adjustedRenderHeightForMode(mode: app_state.ViewMode, render_height: c_int, ui_scale: f32, grid_rows: usize) c_int {
     return switch (mode) {
-        .Grid, .Collapsing, .GridResizing => blk: {
+        .Grid => blk: {
             const cell_height = @divFloor(render_height, @as(c_int, @intCast(grid_rows)));
             const reserved_per_cell: c_int = if (cell_height >= ui_mod.cwd_bar.minCellHeight(ui_scale))
                 ui_mod.cwd_bar.reservedHeight(ui_scale)
@@ -296,7 +297,7 @@ fn adjustedRenderHeightForMode(mode: app_state.ViewMode, render_height: c_int, u
             const reserved_total = reserved_per_cell * @as(c_int, @intCast(grid_rows));
             break :blk @max(0, render_height - reserved_total);
         },
-        .Expanding, .Full, .PanningLeft, .PanningRight, .PanningUp, .PanningDown => render_height,
+        .Collapsing, .GridResizing, .Expanding, .Full, .PanningLeft, .PanningRight, .PanningUp, .PanningDown => render_height,
     };
 }
 
@@ -336,12 +337,14 @@ fn applyTerminalLayoutIfSizeChanged(
     full_rows: *u16,
 ) bool {
     switch (mode) {
-        .Grid, .Full, .GridResizing => {},
-        .Expanding, .Collapsing, .PanningLeft, .PanningRight, .PanningUp, .PanningDown => return false,
+        .Grid, .Full => {},
+        .GridResizing, .Expanding, .Collapsing, .PanningLeft, .PanningRight, .PanningUp, .PanningDown => return false,
     }
 
     const term_render_height = adjustedRenderHeightForMode(mode, render_height, ui_scale, grid_rows);
     const term_size = layout.calculateTerminalSizeForMode(font, render_width, term_render_height, mode, grid_font_scale, grid_cols, grid_rows, ui_scale);
+    if (full_cols.* == term_size.cols and full_rows.* == term_size.rows) return false;
+
     full_cols.* = term_size.cols;
     full_rows.* = term_size.rows;
     return layout.applyTerminalResize(sessions, allocator, full_cols.*, full_rows.*, render_width, term_render_height, ui_scale);
@@ -1329,8 +1332,9 @@ pub fn run() !void {
     var window_x: c_int = persistence.window.x;
     var window_y: c_int = persistence.window.y;
 
-    const initial_term_render_height = adjustedRenderHeightForMode(.Grid, render_height, ui_scale, grid.rows);
-    const initial_term_size = layout.calculateTerminalSizeForMode(&font, render_width, initial_term_render_height, .Grid, config.grid.font_scale, grid.cols, grid.rows, ui_scale);
+    const initial_view_mode: app_state.ViewMode = if (initial_terminal_count == 1) .Full else .Grid;
+    const initial_term_render_height = adjustedRenderHeightForMode(initial_view_mode, render_height, ui_scale, grid.rows);
+    const initial_term_size = layout.calculateTerminalSizeForMode(&font, render_width, initial_term_render_height, initial_view_mode, config.grid.font_scale, grid.cols, grid.rows, ui_scale);
     var full_cols: u16 = initial_term_size.cols;
     var full_rows: u16 = initial_term_size.rows;
 
@@ -1342,8 +1346,9 @@ pub fn run() !void {
     var cell_width_pixels = @divFloor(render_width, @as(c_int, @intCast(grid.cols)));
     var cell_height_pixels = @divFloor(render_height, @as(c_int, @intCast(grid.rows)));
 
-    const usable_width = @max(0, render_width - renderer_mod.terminal_padding * 2);
-    const usable_height = @max(0, initial_term_render_height - renderer_mod.terminal_padding * 2);
+    const terminal_padding = dpi.scale(renderer_mod.terminal_padding, ui_scale);
+    const usable_width = @max(0, render_width - terminal_padding * 2);
+    const usable_height = @max(0, initial_term_render_height - terminal_padding * 2);
 
     const size = pty_mod.winsize{
         .ws_row = full_rows,
@@ -1433,7 +1438,7 @@ pub fn run() !void {
     var quit_teardown = QuitTeardownState{};
     defer quit_teardown.join();
 
-    const initial_mode: app_state.ViewMode = if (countSpawnedSessions(sessions) == 1) .Full else .Grid;
+    const initial_mode = initial_view_mode;
     var anim_state = AnimationState{
         .mode = initial_mode,
         .focused_session = 0,
@@ -3306,6 +3311,16 @@ fn reloadTestScaleChange(ctx: *TestScaleChangeContext) TestScaleChangeError!void
 
 fn resizeTestScaleChange(ctx: *TestScaleChangeContext) void {
     ctx.resize_calls += 1;
+}
+
+test "adjustedRenderHeightForMode reserves cwd bar only in stable grid mode" {
+    const render_height: c_int = 800;
+    const grid_height = adjustedRenderHeightForMode(.Grid, render_height, 1.0, 2);
+
+    try std.testing.expect(grid_height < render_height);
+    try std.testing.expectEqual(render_height, adjustedRenderHeightForMode(.Collapsing, render_height, 1.0, 2));
+    try std.testing.expectEqual(render_height, adjustedRenderHeightForMode(.GridResizing, render_height, 1.0, 2));
+    try std.testing.expectEqual(render_height, adjustedRenderHeightForMode(.Full, render_height, 1.0, 2));
 }
 
 test "applyScaleChangeAndResize reloads then resizes when scale changes" {

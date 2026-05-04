@@ -115,13 +115,13 @@ pub fn calculateGridCellTerminalSize(font: *const font_mod.Font, window_width: c
 
 pub fn calculateTerminalSizeForMode(font: *const font_mod.Font, window_width: c_int, window_height: c_int, mode: app_state.ViewMode, grid_font_scale: f32, grid_cols: usize, grid_rows: usize, ui_scale: f32) TerminalSize {
     return switch (mode) {
-        .Grid, .Collapsing, .GridResizing => {
+        .Grid => {
             const grid_dim = @max(grid_cols, grid_rows);
             const base_grid_scale: f32 = 1.0 / @as(f32, @floatFromInt(grid_dim));
             const effective_scale: f32 = base_grid_scale * grid_font_scale;
             return calculateGridCellTerminalSize(font, window_width, window_height, effective_scale, grid_cols, grid_rows, ui_scale);
         },
-        .Expanding, .Full, .PanningLeft, .PanningRight, .PanningUp, .PanningDown => calculateTerminalSize(font, window_width, window_height, 1.0, ui_scale),
+        .Collapsing, .GridResizing, .Expanding, .Full, .PanningLeft, .PanningRight, .PanningUp, .PanningDown => calculateTerminalSize(font, window_width, window_height, 1.0, ui_scale),
     };
 }
 
@@ -216,6 +216,8 @@ test "grid mode sizes terminals to the rendered tile area" {
     try std.testing.expect(normal_grid.cols < full.cols);
     try std.testing.expect(enlarged_grid.cols < normal_grid.cols);
     try std.testing.expectEqual(full, calculateTerminalSizeForMode(&font, 1200, 800, .Expanding, 1.0, 2, 1, 1.0));
+    try std.testing.expectEqual(full, calculateTerminalSizeForMode(&font, 1200, 800, .Collapsing, 1.0, 2, 1, 1.0));
+    try std.testing.expectEqual(full, calculateTerminalSizeForMode(&font, 1200, 800, .GridResizing, 1.0, 2, 1, 1.0));
 }
 
 test "terminal cell size ignores pixel-only resize differences" {
