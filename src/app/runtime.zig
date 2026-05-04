@@ -285,6 +285,21 @@ fn agentProcessStarted(session: *const SessionState) bool {
     return session.hasForegroundProcess();
 }
 
+fn adjustedRenderHeightForMode(mode: app_state.ViewMode, render_height: c_int, ui_scale: f32, grid_rows: usize) c_int {
+    return switch (mode) {
+        .Grid, .Collapsing, .GridResizing => blk: {
+            const cell_height = @divFloor(render_height, @as(c_int, @intCast(grid_rows)));
+            const reserved_per_cell: c_int = if (cell_height >= ui_mod.cwd_bar.minCellHeight(ui_scale))
+                ui_mod.cwd_bar.reservedHeight(ui_scale)
+            else
+                0;
+            const reserved_total = reserved_per_cell * @as(c_int, @intCast(grid_rows));
+            break :blk @max(0, render_height - reserved_total);
+        },
+        .Expanding, .Full, .PanningLeft, .PanningRight, .PanningUp, .PanningDown => render_height,
+    };
+}
+
 fn applyTerminalLayout(
     sessions: []const *SessionState,
     allocator: std.mem.Allocator,
@@ -299,11 +314,37 @@ fn applyTerminalLayout(
     full_cols: *u16,
     full_rows: *u16,
 ) void {
-    const term_render_height = render_height;
+    const term_render_height = adjustedRenderHeightForMode(mode, render_height, ui_scale, grid_rows);
     const term_size = layout.calculateTerminalSizeForMode(font, render_width, term_render_height, mode, grid_font_scale, grid_cols, grid_rows, ui_scale);
     full_cols.* = term_size.cols;
     full_rows.* = term_size.rows;
-    layout.applyTerminalResize(sessions, allocator, full_cols.*, full_rows.*, render_width, term_render_height, ui_scale);
+    _ = layout.applyTerminalResize(sessions, allocator, full_cols.*, full_rows.*, render_width, term_render_height, ui_scale);
+}
+
+fn applyTerminalLayoutIfSizeChanged(
+    sessions: []const *SessionState,
+    allocator: std.mem.Allocator,
+    font: *font_mod.Font,
+    render_width: c_int,
+    render_height: c_int,
+    ui_scale: f32,
+    mode: app_state.ViewMode,
+    grid_cols: usize,
+    grid_rows: usize,
+    grid_font_scale: f32,
+    full_cols: *u16,
+    full_rows: *u16,
+) bool {
+    switch (mode) {
+        .Grid, .Full, .GridResizing => {},
+        .Expanding, .Collapsing, .PanningLeft, .PanningRight, .PanningUp, .PanningDown => return false,
+    }
+
+    const term_render_height = adjustedRenderHeightForMode(mode, render_height, ui_scale, grid_rows);
+    const term_size = layout.calculateTerminalSizeForMode(font, render_width, term_render_height, mode, grid_font_scale, grid_cols, grid_rows, ui_scale);
+    full_cols.* = term_size.cols;
+    full_rows.* = term_size.rows;
+    return layout.applyTerminalResize(sessions, allocator, full_cols.*, full_rows.*, render_width, term_render_height, ui_scale);
 }
 
 const SessionIndexSnapshot = struct {
@@ -831,7 +872,7 @@ fn reloadRuntimeFontsForScaleChange(ctx: *RuntimeScaleChangeContext) font_mod.Fo
 }
 
 fn applyRuntimeResizeForScaleChange(ctx: *RuntimeScaleChangeContext) void {
-    const term_render_height = ctx.render_height;
+    const term_render_height = adjustedRenderHeightForMode(ctx.mode, ctx.render_height, ctx.ui_scale, ctx.grid_rows);
     const new_term_size = layout.calculateTerminalSizeForMode(
         ctx.font,
         ctx.render_width,
@@ -844,7 +885,7 @@ fn applyRuntimeResizeForScaleChange(ctx: *RuntimeScaleChangeContext) void {
     );
     ctx.full_cols.* = new_term_size.cols;
     ctx.full_rows.* = new_term_size.rows;
-    layout.applyTerminalResize(
+    _ = layout.applyTerminalResize(
         ctx.sessions,
         ctx.allocator,
         ctx.full_cols.*,
@@ -1288,7 +1329,7 @@ pub fn run() !void {
     var window_x: c_int = persistence.window.x;
     var window_y: c_int = persistence.window.y;
 
-    const initial_term_render_height = render_height;
+    const initial_term_render_height = adjustedRenderHeightForMode(.Grid, render_height, ui_scale, grid.rows);
     const initial_term_size = layout.calculateTerminalSizeForMode(&font, render_width, initial_term_render_height, .Grid, config.grid.font_scale, grid.cols, grid.rows, ui_scale);
     var full_cols: u16 = initial_term_size.cols;
     var full_rows: u16 = initial_term_size.rows;
@@ -1965,11 +2006,7 @@ pub fn run() !void {
                             font.metrics = metrics_ptr;
                             font_size = target_size;
 
-                            const term_render_height = render_height;
-                            const term_size = layout.calculateTerminalSizeForMode(&font, render_width, term_render_height, anim_state.mode, config.grid.font_scale, grid.cols, grid.rows, ui_scale);
-                            full_cols = term_size.cols;
-                            full_rows = term_size.rows;
-                            layout.applyTerminalResize(sessions, allocator, full_cols, full_rows, render_width, term_render_height, ui_scale);
+                            applyTerminalLayout(sessions, allocator, &font, render_width, render_height, ui_scale, anim_state.mode, grid.cols, grid.rows, config.grid.font_scale, &full_cols, &full_rows);
                             std.debug.print("Font size -> {d}px, terminal size: {d}x{d}\n", .{ font_size, full_cols, full_rows });
 
                             persistence.font_size = font_size;
@@ -2276,7 +2313,7 @@ pub fn run() !void {
         if (quit_teardown.isFinished()) {
             running = false;
         }
-        const any_session_dirty = render_cache.anyDirty(sessions);
+        var any_session_dirty = render_cache.anyDirty(sessions);
 
         var control_requests = control_queue.drainAll();
         defer control_requests.deinit(allocator);
@@ -2878,6 +2915,29 @@ pub fn run() !void {
                 }
                 std.debug.print("Grid resize complete: {d}x{d}\n", .{ grid.cols, grid.rows });
             }
+        }
+
+        const terminal_layout_changed = applyTerminalLayoutIfSizeChanged(
+            sessions,
+            allocator,
+            &font,
+            render_width,
+            render_height,
+            ui_scale,
+            anim_state.mode,
+            grid.cols,
+            grid.rows,
+            config.grid.font_scale,
+            &full_cols,
+            &full_rows,
+        );
+        if (terminal_layout_changed) {
+            any_session_dirty = true;
+            std.debug.print("Terminal layout adjusted for {s}: {d}x{d}\n", .{
+                @tagName(anim_state.mode),
+                full_cols,
+                full_rows,
+            });
         }
 
         if (anim_state.mode != last_logged_mode) {
