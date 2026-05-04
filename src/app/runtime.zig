@@ -301,6 +301,31 @@ fn adjustedRenderHeightForMode(mode: app_state.ViewMode, render_height: c_int, u
     };
 }
 
+fn anyVisibleSessionSynchronizedOutput(
+    sessions: []const *SessionState,
+    anim_state: *const AnimationState,
+    grid_cols: usize,
+    grid_rows: usize,
+) bool {
+    switch (anim_state.mode) {
+        .Grid, .GridResizing => {
+            const visible_count = @min(sessions.len, grid_cols * grid_rows);
+            for (sessions[0..visible_count]) |session| {
+                if (session.synchronizedOutputActive()) return true;
+            }
+            return false;
+        },
+        .Full, .Expanding, .Collapsing => {
+            if (anim_state.focused_session < sessions.len and sessions[anim_state.focused_session].synchronizedOutputActive()) return true;
+            return anim_state.previous_session < sessions.len and sessions[anim_state.previous_session].synchronizedOutputActive();
+        },
+        .PanningLeft, .PanningRight, .PanningUp, .PanningDown => {
+            if (anim_state.focused_session < sessions.len and sessions[anim_state.focused_session].synchronizedOutputActive()) return true;
+            return anim_state.previous_session < sessions.len and sessions[anim_state.previous_session].synchronizedOutputActive();
+        },
+    }
+}
+
 fn applyTerminalLayout(
     sessions: []const *SessionState,
     allocator: std.mem.Allocator,
@@ -2290,6 +2315,7 @@ pub fn run() !void {
             };
             const prev_cwd_ptr = if (session.cwd_path) |p| p.ptr else null;
             session.updateCwd(now);
+            _ = session.expireSynchronizedOutput(now);
             if (session.cwd_path) |new_cwd| {
                 // Compare pointers: if they differ, cwd changed (and old memory was freed by updateCwd)
                 const changed = prev_cwd_ptr == null or prev_cwd_ptr != new_cwd.ptr;
@@ -2971,9 +2997,11 @@ pub fn run() !void {
         );
 
         const animating = anim_state.mode != .Grid and anim_state.mode != .Full;
+        const holding_synchronized_output = anyVisibleSessionSynchronizedOutput(sessions, &anim_state, grid.cols, grid.rows);
         const ui_needs_frame = ui.needsFrame(&ui_render_host);
         const last_render_stale = last_render_ns == 0 or (frame_start_ns - last_render_ns) >= max_idle_render_gap_ns;
-        const should_render = animating or any_session_dirty or ui_needs_frame or processed_event or had_notifications or had_control_requests or last_render_stale;
+        const should_render = !holding_synchronized_output and
+            (animating or any_session_dirty or ui_needs_frame or processed_event or had_notifications or had_control_requests or last_render_stale);
 
         if (should_render) {
             if (relaunch_trace_frames > 0) {
@@ -3016,7 +3044,7 @@ pub fn run() !void {
             relaunch_trace_frames -= 1;
         }
 
-        const is_idle = !animating and !any_session_dirty and !ui_needs_frame and !processed_event and !had_notifications and !had_control_requests;
+        const is_idle = !holding_synchronized_output and !animating and !any_session_dirty and !ui_needs_frame and !processed_event and !had_notifications and !had_control_requests;
 
         if (window_close_suppress_countdown > 0) {
             window_close_suppress_countdown -= 1;

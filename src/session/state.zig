@@ -74,6 +74,7 @@ extern "c" fn proc_pidpath(pid: c_int, buffer: [*]u8, buffersize: u32) c_int;
 
 const pending_write_shrink_threshold: usize = 64 * 1024;
 const session_id_buf_len: usize = 32;
+const synchronized_output_timeout_ms: i64 = 1000;
 var next_session_id = std.atomic.Value(usize).init(0);
 
 pub const SessionState = struct {
@@ -123,6 +124,7 @@ pub const SessionState = struct {
     /// stale UUIDs from earlier scrollback.
     quit_capture: std.ArrayListUnmanaged(u8) = .empty,
     quit_capture_active: bool = false,
+    synchronized_output_started_ms: i64 = 0,
 
     const WaitContext = struct {
         session: *SessionState,
@@ -292,6 +294,7 @@ pub const SessionState = struct {
         self.quit_capture.deinit(allocator);
         self.quit_capture = .empty;
         self.quit_capture_active = false;
+        self.synchronized_output_started_ms = 0;
 
         if (self.agent_session_id) |sid| {
             allocator.free(sid);
@@ -439,6 +442,7 @@ pub const SessionState = struct {
         self.pending_write.clearAndFree(self.allocator);
         self.quit_capture.clearAndFree(self.allocator);
         self.quit_capture_active = false;
+        self.synchronized_output_started_ms = 0;
         if (self.process_watcher) |*watcher| {
             watcher.deinit();
             self.process_watcher = null;
@@ -480,6 +484,59 @@ pub const SessionState = struct {
         self.render_epoch +%= 1;
     }
 
+    pub fn synchronizedOutputActive(self: *const SessionState) bool {
+        if (!self.spawned or self.dead) return false;
+        if (self.terminal) |*terminal| {
+            return terminal.modes.get(.synchronized_output);
+        }
+        return false;
+    }
+
+    pub fn expireSynchronizedOutput(self: *SessionState, current_time_ms: i64) bool {
+        if (!self.spawned or self.dead) {
+            self.synchronized_output_started_ms = 0;
+            return false;
+        }
+
+        const terminal = if (self.terminal) |*terminal| terminal else {
+            self.synchronized_output_started_ms = 0;
+            return false;
+        };
+
+        if (!terminal.modes.get(.synchronized_output)) {
+            self.synchronized_output_started_ms = 0;
+            return false;
+        }
+
+        if (self.synchronized_output_started_ms == 0 or current_time_ms < self.synchronized_output_started_ms) {
+            self.synchronized_output_started_ms = current_time_ms;
+            return false;
+        }
+
+        if (current_time_ms - self.synchronized_output_started_ms < synchronized_output_timeout_ms) return false;
+
+        terminal.modes.set(.synchronized_output, false);
+        self.synchronized_output_started_ms = 0;
+        self.markDirty();
+        return true;
+    }
+
+    fn updateSynchronizedOutputState(self: *SessionState, was_active: bool, current_time_ms: i64) void {
+        const terminal = if (self.terminal) |*terminal| terminal else {
+            self.synchronized_output_started_ms = 0;
+            return;
+        };
+
+        const is_active = terminal.modes.get(.synchronized_output);
+        if (is_active) {
+            if (!was_active or self.synchronized_output_started_ms == 0) {
+                self.synchronized_output_started_ms = current_time_ms;
+            }
+        } else {
+            self.synchronized_output_started_ms = 0;
+        }
+    }
+
     fn clearTerminalSelection(self: *SessionState) void {
         if (!self.spawned) return;
         if (self.terminal) |*terminal| {
@@ -513,7 +570,9 @@ pub const SessionState = struct {
                     log.warn("session {d}: quit capture append failed: {}", .{ self.id, err });
                 };
             }
+            const was_synchronized_output = self.synchronizedOutputActive();
             try stream.nextSlice(self.output_buf[0..n]);
+            self.updateSynchronizedOutputState(was_synchronized_output, std.time.milliTimestamp());
             self.markDirty();
 
             // Keep draining until the PTY would block to avoid frame-bounded
@@ -856,6 +915,50 @@ fn getForegroundPgrp(child_pid: posix.pid_t) ?posix.pid_t {
 }
 
 pub const MakeNonBlockingError = posix.FcntlError;
+
+test "synchronized output timeout clears stuck terminal mode" {
+    const allocator = std.testing.allocator;
+
+    var session: SessionState = undefined;
+    session.spawned = true;
+    session.dead = false;
+    session.render_epoch = 1;
+    session.synchronized_output_started_ms = 100;
+    session.terminal = try ghostty_vt.Terminal.init(allocator, .{
+        .cols = 10,
+        .rows = 3,
+        .max_scrollback = 5,
+    });
+    defer session.terminal.?.deinit(allocator);
+
+    session.terminal.?.modes.set(.synchronized_output, true);
+    try std.testing.expect(session.synchronizedOutputActive());
+    try std.testing.expect(!session.expireSynchronizedOutput(1099));
+    try std.testing.expect(session.synchronizedOutputActive());
+    try std.testing.expect(session.expireSynchronizedOutput(1100));
+    try std.testing.expect(!session.synchronizedOutputActive());
+    try std.testing.expectEqual(@as(u64, 2), session.render_epoch);
+}
+
+test "synchronized output timeout resets when mode is already clear" {
+    const allocator = std.testing.allocator;
+
+    var session: SessionState = undefined;
+    session.spawned = true;
+    session.dead = false;
+    session.render_epoch = 1;
+    session.synchronized_output_started_ms = 100;
+    session.terminal = try ghostty_vt.Terminal.init(allocator, .{
+        .cols = 10,
+        .rows = 3,
+        .max_scrollback = 5,
+    });
+    defer session.terminal.?.deinit(allocator);
+
+    try std.testing.expect(!session.expireSynchronizedOutput(2000));
+    try std.testing.expectEqual(@as(i64, 0), session.synchronized_output_started_ms);
+    try std.testing.expectEqual(@as(u64, 1), session.render_epoch);
+}
 
 test "SessionState assigns incrementing ids" {
     const allocator = std.testing.allocator;
