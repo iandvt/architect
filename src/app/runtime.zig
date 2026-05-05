@@ -3,6 +3,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const xev = @import("xev");
+const ghostty_vt = @import("ghostty-vt");
 const posix = std.posix;
 const app_state = @import("app_state.zig");
 const grid_layout = @import("grid_layout.zig");
@@ -116,7 +117,11 @@ fn waitTimeoutMsFromNs(remaining_ns: u64) c_int {
     return @intCast(@min(timeout_ms, max_timeout_ms));
 }
 
-fn computeFrameWaitDecision(is_idle: bool, vsync_enabled: bool, frame_ns: i128) FrameWaitDecision {
+fn computeFrameWaitDecision(is_idle: bool, vsync_enabled: bool, frame_ns: i128, holding_synchronized_output: bool) FrameWaitDecision {
+    if (holding_synchronized_output) {
+        const sleep_ns = remainingFrameBudgetNs(active_frame_ns, frame_ns);
+        return if (sleep_ns > 0) .{ .active_sleep_ns = sleep_ns } else .none;
+    }
     if (is_idle) {
         const timeout_ms = waitTimeoutMsFromNs(remainingFrameBudgetNs(idle_frame_ns, frame_ns));
         return if (timeout_ms > 0) .{ .idle_wait_ms = timeout_ms } else .none;
@@ -299,6 +304,30 @@ fn adjustedRenderHeightForMode(mode: app_state.ViewMode, render_height: c_int, u
         },
         .Collapsing, .GridResizing, .Expanding, .Full, .PanningLeft, .PanningRight, .PanningUp, .PanningDown => render_height,
     };
+}
+
+fn anyVisibleSessionSynchronizedOutput(
+    sessions: []const *SessionState,
+    anim_state: *const AnimationState,
+    grid_cols: usize,
+    grid_rows: usize,
+) bool {
+    return switch (anim_state.mode) {
+        .Grid, .GridResizing => blk: {
+            const visible_count = @min(sessions.len, grid_cols * grid_rows);
+            for (sessions[0..visible_count]) |session| {
+                if (session.synchronizedOutputActive()) break :blk true;
+            }
+            break :blk false;
+        },
+        .Full => synchronizedOutputActiveAt(sessions, anim_state.focused_session),
+        .Expanding, .Collapsing, .PanningLeft, .PanningRight, .PanningUp, .PanningDown => synchronizedOutputActiveAt(sessions, anim_state.focused_session) or
+            synchronizedOutputActiveAt(sessions, anim_state.previous_session),
+    };
+}
+
+fn synchronizedOutputActiveAt(sessions: []const *SessionState, idx: usize) bool {
+    return idx < sessions.len and sessions[idx].synchronizedOutputActive();
 }
 
 fn applyTerminalLayout(
@@ -2290,6 +2319,7 @@ pub fn run() !void {
             };
             const prev_cwd_ptr = if (session.cwd_path) |p| p.ptr else null;
             session.updateCwd(now);
+            _ = session.expireSynchronizedOutput(now);
             if (session.cwd_path) |new_cwd| {
                 // Compare pointers: if they differ, cwd changed (and old memory was freed by updateCwd)
                 const changed = prev_cwd_ptr == null or prev_cwd_ptr != new_cwd.ptr;
@@ -2971,9 +3001,11 @@ pub fn run() !void {
         );
 
         const animating = anim_state.mode != .Grid and anim_state.mode != .Full;
+        const holding_synchronized_output = anyVisibleSessionSynchronizedOutput(sessions, &anim_state, grid.cols, grid.rows);
         const ui_needs_frame = ui.needsFrame(&ui_render_host);
         const last_render_stale = last_render_ns == 0 or (frame_start_ns - last_render_ns) >= max_idle_render_gap_ns;
-        const should_render = animating or any_session_dirty or ui_needs_frame or processed_event or had_notifications or had_control_requests or last_render_stale;
+        const should_render = !holding_synchronized_output and
+            (animating or any_session_dirty or ui_needs_frame or processed_event or had_notifications or had_control_requests or last_render_stale);
 
         if (should_render) {
             if (relaunch_trace_frames > 0) {
@@ -3024,7 +3056,7 @@ pub fn run() !void {
 
         const frame_end_ns: i128 = std.time.nanoTimestamp();
         const frame_ns = frame_end_ns - frame_start_ns;
-        next_frame_wait = computeFrameWaitDecision(is_idle, sdl.vsync_enabled, frame_ns);
+        next_frame_wait = computeFrameWaitDecision(is_idle, sdl.vsync_enabled, frame_ns, holding_synchronized_output);
     }
 
     if (builtin.os.tag == .macos) {
@@ -3148,7 +3180,7 @@ test "waitTimeoutMsFromNs rounds up to whole milliseconds" {
 }
 
 test "computeFrameWaitDecision returns idle wait while idle" {
-    const decision = computeFrameWaitDecision(true, false, 10 * std.time.ns_per_ms);
+    const decision = computeFrameWaitDecision(true, false, 10 * std.time.ns_per_ms, false);
     switch (decision) {
         .idle_wait_ms => |timeout_ms| try std.testing.expectEqual(@as(c_int, 40), timeout_ms),
         else => try std.testing.expect(false),
@@ -3156,7 +3188,7 @@ test "computeFrameWaitDecision returns idle wait while idle" {
 }
 
 test "computeFrameWaitDecision keeps active pacing without vsync" {
-    const decision = computeFrameWaitDecision(false, false, 5 * std.time.ns_per_ms);
+    const decision = computeFrameWaitDecision(false, false, 5 * std.time.ns_per_ms, false);
     switch (decision) {
         .active_sleep_ns => |sleep_ns| try std.testing.expectEqual(@as(u64, active_frame_ns - (5 * std.time.ns_per_ms)), sleep_ns),
         else => try std.testing.expect(false),
@@ -3164,11 +3196,59 @@ test "computeFrameWaitDecision keeps active pacing without vsync" {
 }
 
 test "computeFrameWaitDecision defers to vsync while active" {
-    const decision = computeFrameWaitDecision(false, true, 5 * std.time.ns_per_ms);
+    const decision = computeFrameWaitDecision(false, true, 5 * std.time.ns_per_ms, false);
     switch (decision) {
         .none => {},
         else => try std.testing.expect(false),
     }
+}
+
+test "computeFrameWaitDecision paces synchronized output holds with vsync" {
+    const decision = computeFrameWaitDecision(false, true, 5 * std.time.ns_per_ms, true);
+    switch (decision) {
+        .active_sleep_ns => |sleep_ns| try std.testing.expectEqual(@as(u64, active_frame_ns - (5 * std.time.ns_per_ms)), sleep_ns),
+        else => try std.testing.expect(false),
+    }
+}
+
+test "full view synchronized hold ignores previous session" {
+    const allocator = std.testing.allocator;
+
+    var focused: SessionState = undefined;
+    focused.spawned = true;
+    focused.dead = false;
+    focused.terminal = try ghostty_vt.Terminal.init(allocator, .{
+        .cols = 10,
+        .rows = 3,
+        .max_scrollback = 5,
+    });
+    defer focused.terminal.?.deinit(allocator);
+
+    var previous: SessionState = undefined;
+    previous.spawned = true;
+    previous.dead = false;
+    previous.terminal = try ghostty_vt.Terminal.init(allocator, .{
+        .cols = 10,
+        .rows = 3,
+        .max_scrollback = 5,
+    });
+    defer previous.terminal.?.deinit(allocator);
+    previous.terminal.?.modes.set(.synchronized_output, true);
+
+    var sessions = [_]*SessionState{ &focused, &previous };
+    const rect = Rect{ .x = 0, .y = 0, .w = 10, .h = 10 };
+    var anim_state = AnimationState{
+        .mode = .Full,
+        .focused_session = 0,
+        .previous_session = 1,
+        .start_time = 0,
+        .start_rect = rect,
+        .target_rect = rect,
+    };
+
+    try std.testing.expect(!anyVisibleSessionSynchronizedOutput(&sessions, &anim_state, 2, 1));
+    anim_state.mode = .Expanding;
+    try std.testing.expect(anyVisibleSessionSynchronizedOutput(&sessions, &anim_state, 2, 1));
 }
 
 test "markTeardownComplete returns true only once" {
