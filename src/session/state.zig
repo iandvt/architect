@@ -79,7 +79,7 @@ const synchronized_output_quiet_ms: i64 = 100;
 const synchronized_output_max_timeout_ms: i64 = 5000;
 const terminal_resize_hold_min_ms: i64 = 100;
 const terminal_resize_hold_quiet_ms: i64 = 100;
-const terminal_resize_hold_max_ms: i64 = 5000;
+const terminal_resize_hold_max_ms: i64 = 500;
 var next_session_id = std.atomic.Value(usize).init(0);
 
 pub const SessionState = struct {
@@ -538,12 +538,12 @@ pub const SessionState = struct {
             return false;
         }
 
-        if (self.terminal_resize_last_output_ms == 0 or current_time_ms < self.terminal_resize_last_output_ms) {
-            self.terminal_resize_last_output_ms = self.terminal_resize_started_ms;
-        }
-
         const active_ms = current_time_ms - self.terminal_resize_started_ms;
-        const quiet_ms = current_time_ms - self.terminal_resize_last_output_ms;
+        const quiet_ms = quietDurationMs(
+            current_time_ms,
+            self.terminal_resize_started_ms,
+            self.terminal_resize_last_output_ms,
+        );
         if (active_ms < terminal_resize_hold_min_ms) return false;
         if (active_ms < terminal_resize_hold_max_ms and quiet_ms < terminal_resize_hold_quiet_ms) return false;
 
@@ -578,12 +578,12 @@ pub const SessionState = struct {
             return false;
         }
 
-        if (self.synchronized_output_last_output_ms == 0 or current_time_ms < self.synchronized_output_last_output_ms) {
-            self.synchronized_output_last_output_ms = self.synchronized_output_started_ms;
-        }
-
         const active_ms = current_time_ms - self.synchronized_output_started_ms;
-        const quiet_ms = current_time_ms - self.synchronized_output_last_output_ms;
+        const quiet_ms = quietDurationMs(
+            current_time_ms,
+            self.synchronized_output_started_ms,
+            self.synchronized_output_last_output_ms,
+        );
         if (active_ms < synchronized_output_timeout_ms) return false;
         if (active_ms < synchronized_output_max_timeout_ms and quiet_ms < synchronized_output_quiet_ms) return false;
 
@@ -614,6 +614,12 @@ pub const SessionState = struct {
         if (self.terminalResizeHoldActive()) {
             self.terminal_resize_last_output_ms = current_time_ms;
         }
+    }
+
+    fn quietDurationMs(current_time_ms: i64, started_ms: i64, last_output_ms: i64) i64 {
+        const quiet_started_ms = if (last_output_ms == 0) started_ms else last_output_ms;
+        if (current_time_ms <= quiet_started_ms) return 0;
+        return current_time_ms - quiet_started_ms;
     }
 
     fn clearTerminalSelection(self: *SessionState) void {
@@ -1064,6 +1070,28 @@ test "synchronized output timeout waits for output to go quiet" {
     try std.testing.expect(!session.synchronizedOutputActive());
 }
 
+test "synchronized output keeps future last-output sample" {
+    const allocator = std.testing.allocator;
+
+    var session: SessionState = undefined;
+    session.spawned = true;
+    session.dead = false;
+    session.render_epoch = 1;
+    session.synchronized_output_started_ms = 100;
+    session.synchronized_output_last_output_ms = 1101;
+    session.terminal = try ghostty_vt.Terminal.init(allocator, .{
+        .cols = 10,
+        .rows = 3,
+        .max_scrollback = 5,
+    });
+    defer session.terminal.?.deinit(allocator);
+
+    session.terminal.?.modes.set(.synchronized_output, true);
+    try std.testing.expect(!session.expireSynchronizedOutput(1100));
+    try std.testing.expect(session.synchronizedOutputActive());
+    try std.testing.expectEqual(@as(i64, 1101), session.synchronized_output_last_output_ms);
+}
+
 test "synchronized output hard timeout clears chatty sessions" {
     const allocator = std.testing.allocator;
 
@@ -1102,16 +1130,30 @@ test "terminal resize hold waits for output to go quiet" {
     try std.testing.expectEqual(@as(u64, 2), session.render_epoch);
 }
 
-test "terminal resize hold hard timeout clears chatty sessions" {
+test "terminal resize hold keeps future last-output sample" {
     var session: SessionState = undefined;
     session.spawned = true;
     session.dead = false;
     session.terminal = null;
     session.render_epoch = 1;
     session.terminal_resize_started_ms = 100;
-    session.terminal_resize_last_output_ms = 5099;
+    session.terminal_resize_last_output_ms = 201;
 
-    try std.testing.expect(session.expireTerminalResizeHold(5100));
+    try std.testing.expect(!session.expireTerminalResizeHold(200));
+    try std.testing.expect(session.outputHoldActive());
+    try std.testing.expectEqual(@as(i64, 201), session.terminal_resize_last_output_ms);
+}
+
+test "terminal resize hold caps chatty sessions" {
+    var session: SessionState = undefined;
+    session.spawned = true;
+    session.dead = false;
+    session.terminal = null;
+    session.render_epoch = 1;
+    session.terminal_resize_started_ms = 100;
+    session.terminal_resize_last_output_ms = 100 + terminal_resize_hold_max_ms - 1;
+
+    try std.testing.expect(session.expireTerminalResizeHold(100 + terminal_resize_hold_max_ms));
     try std.testing.expect(!session.outputHoldActive());
 }
 

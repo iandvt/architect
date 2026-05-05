@@ -911,8 +911,22 @@ fn cacheNeedsRefresh(
     return cache_entry.cache_epoch != session_epoch or cache_entry.cache_composition != composition or cache_entry.cache_render_mode != render_mode;
 }
 
-fn shouldHoldSessionCacheRefresh(output_hold_active: bool, has_texture: bool, cache_epoch: u64) bool {
-    return output_hold_active and has_texture and cache_epoch != 0;
+fn shouldHoldSessionCacheRefresh(
+    output_hold_active: bool,
+    has_texture: bool,
+    cache_epoch: u64,
+    cache_width: c_int,
+    cache_height: c_int,
+    requested_rect: Rect,
+    cached_render_mode: RenderCache.CacheRenderMode,
+    requested_render_mode: RenderCache.CacheRenderMode,
+) bool {
+    return output_hold_active and
+        has_texture and
+        cache_epoch != 0 and
+        cache_width == requested_rect.w and
+        cache_height == requested_rect.h and
+        cached_render_mode == requested_render_mode;
 }
 
 fn renderHeldSessionTexture(
@@ -930,7 +944,17 @@ fn renderHeldSessionTexture(
     theme: *const colors.Theme,
     ui_scale: f32,
 ) bool {
-    if (!shouldHoldSessionCacheRefresh(session.outputHoldActive(), cache_entry.texture != null, cache_entry.cache_epoch)) return false;
+    const render_mode = cacheRenderMode(is_grid_view);
+    if (!shouldHoldSessionCacheRefresh(
+        session.outputHoldActive(),
+        cache_entry.texture != null,
+        cache_entry.cache_epoch,
+        cache_entry.width,
+        cache_entry.height,
+        rect,
+        cache_entry.cache_render_mode,
+        render_mode,
+    )) return false;
 
     const tex = cache_entry.texture orelse return false;
     if (wave_effect) |wave| {
@@ -942,6 +966,7 @@ fn renderHeldSessionTexture(
     if (render_overlays and cache_entry.cache_composition == .content_only) {
         renderSessionOverlays(renderer, session, view, rect, is_focused, apply_effects, current_time_ms, is_grid_view, theme, ui_scale);
     }
+    cache_entry.presented_epoch = session.render_epoch;
     return true;
 }
 
@@ -1056,10 +1081,15 @@ fn renderSessionCached(
 }
 
 test "synchronized output hold reuses populated cache only" {
-    try std.testing.expect(shouldHoldSessionCacheRefresh(true, true, 1));
-    try std.testing.expect(!shouldHoldSessionCacheRefresh(false, true, 1));
-    try std.testing.expect(!shouldHoldSessionCacheRefresh(true, false, 1));
-    try std.testing.expect(!shouldHoldSessionCacheRefresh(true, true, 0));
+    const rect = Rect{ .x = 0, .y = 0, .w = 100, .h = 80 };
+
+    try std.testing.expect(shouldHoldSessionCacheRefresh(true, true, 1, 100, 80, rect, .grid, .grid));
+    try std.testing.expect(!shouldHoldSessionCacheRefresh(false, true, 1, 100, 80, rect, .grid, .grid));
+    try std.testing.expect(!shouldHoldSessionCacheRefresh(true, false, 1, 100, 80, rect, .grid, .grid));
+    try std.testing.expect(!shouldHoldSessionCacheRefresh(true, true, 0, 100, 80, rect, .grid, .grid));
+    try std.testing.expect(!shouldHoldSessionCacheRefresh(true, true, 1, 99, 80, rect, .grid, .grid));
+    try std.testing.expect(!shouldHoldSessionCacheRefresh(true, true, 1, 100, 79, rect, .grid, .grid));
+    try std.testing.expect(!shouldHoldSessionCacheRefresh(true, true, 1, 100, 80, rect, .grid, .full));
 }
 
 /// Render the cached tile texture in horizontal strips with per-strip wave scaling.
