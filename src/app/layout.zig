@@ -120,10 +120,16 @@ pub const Sizes = struct {
     full: TerminalSize,
 };
 
+/// `grid_window_height` should be the render height with the Grid-mode CWD-bar
+/// reservation applied (and should NOT vary across view modes — unfocused
+/// sessions stay at grid size permanently, so the grid dims must be stable).
+/// `full_window_height` is the raw render height (the focused session uses the
+/// whole window when at full size).
 pub fn calculateTerminalSizes(
     font: *const font_mod.Font,
     window_width: c_int,
-    window_height: c_int,
+    grid_window_height: c_int,
+    full_window_height: c_int,
     grid_font_scale: f32,
     grid_cols: usize,
     grid_rows: usize,
@@ -133,8 +139,8 @@ pub fn calculateTerminalSizes(
     const base_grid_scale: f32 = 1.0 / @as(f32, @floatFromInt(grid_dim));
     const effective_scale: f32 = base_grid_scale * grid_font_scale;
     return .{
-        .grid = calculateGridCellTerminalSize(font, window_width, window_height, effective_scale, grid_cols, grid_rows, ui_scale),
-        .full = calculateTerminalSize(font, window_width, window_height, 1.0, ui_scale),
+        .grid = calculateGridCellTerminalSize(font, window_width, grid_window_height, effective_scale, grid_cols, grid_rows, ui_scale),
+        .full = calculateTerminalSize(font, window_width, full_window_height, 1.0, ui_scale),
     };
 }
 
@@ -264,12 +270,25 @@ test "calculateTerminalSizes returns smaller grid than full and shrinks grid fur
     font.cell_width = 10;
     font.cell_height = 20;
 
-    const normal = calculateTerminalSizes(&font, 1200, 800, 1.0, 2, 1, 1.0);
-    const enlarged = calculateTerminalSizes(&font, 1200, 800, 2.0, 2, 1, 1.0);
+    const normal = calculateTerminalSizes(&font, 1200, 800, 800, 1.0, 2, 1, 1.0);
+    const enlarged = calculateTerminalSizes(&font, 1200, 800, 800, 2.0, 2, 1, 1.0);
 
     try std.testing.expect(normal.grid.cols < normal.full.cols);
     try std.testing.expect(enlarged.grid.cols < normal.grid.cols);
     try std.testing.expectEqual(normal.full, enlarged.full);
+}
+
+test "calculateTerminalSizes grid dims stay stable when only full height changes" {
+    var font: font_mod.Font = undefined;
+    font.cell_width = 10;
+    font.cell_height = 20;
+
+    // grid_window_height held constant; full_window_height varies (the typical
+    // case across view-mode toggles where the CWD-bar reservation only changes
+    // when the actual grid layout changes).
+    const a = calculateTerminalSizes(&font, 1200, 700, 800, 1.0, 2, 1, 1.0);
+    const b = calculateTerminalSizes(&font, 1200, 700, 750, 1.0, 2, 1, 1.0);
+    try std.testing.expectEqual(a.grid, b.grid);
 }
 
 test "FullSet.contains identifies primary and secondary indices" {

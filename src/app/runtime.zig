@@ -326,12 +326,11 @@ fn applyTerminalLayout(
     full_cols: *u16,
     full_rows: *u16,
 ) void {
-    const term_render_height = adjustedRenderHeightForMode(anim_state.mode, render_height, ui_scale, grid_rows);
-    const sizes = layout.calculateTerminalSizes(font, render_width, term_render_height, grid_font_scale, grid_cols, grid_rows, ui_scale);
+    const sizes = computeTerminalSizes(font, render_width, render_height, ui_scale, grid_cols, grid_rows, grid_font_scale);
     full_cols.* = sizes.full.cols;
     full_rows.* = sizes.full.rows;
     const full_set = fullSetForMode(anim_state.mode, anim_state.focused_session, anim_state.previous_session);
-    _ = layout.applyTerminalResize(sessions, allocator, sizes, full_set, render_width, term_render_height, ui_scale);
+    _ = layout.applyTerminalResize(sessions, allocator, sizes, full_set, render_width, render_height, ui_scale);
 }
 
 fn applyTerminalLayoutIfSizeChanged(
@@ -348,12 +347,27 @@ fn applyTerminalLayoutIfSizeChanged(
     full_cols: *u16,
     full_rows: *u16,
 ) bool {
-    const term_render_height = adjustedRenderHeightForMode(anim_state.mode, render_height, ui_scale, grid_rows);
-    const sizes = layout.calculateTerminalSizes(font, render_width, term_render_height, grid_font_scale, grid_cols, grid_rows, ui_scale);
+    const sizes = computeTerminalSizes(font, render_width, render_height, ui_scale, grid_cols, grid_rows, grid_font_scale);
     full_cols.* = sizes.full.cols;
     full_rows.* = sizes.full.rows;
     const full_set = fullSetForMode(anim_state.mode, anim_state.focused_session, anim_state.previous_session);
-    return layout.applyTerminalResize(sessions, allocator, sizes, full_set, render_width, term_render_height, ui_scale);
+    return layout.applyTerminalResize(sessions, allocator, sizes, full_set, render_width, render_height, ui_scale);
+}
+
+/// Computes both terminal sizes from the raw render dimensions. grid_size
+/// always uses the Grid-mode CWD-bar reservation so unfocused sessions stay at
+/// stable dims across view-mode toggles; full_size uses the raw render height.
+fn computeTerminalSizes(
+    font: *font_mod.Font,
+    render_width: c_int,
+    render_height: c_int,
+    ui_scale: f32,
+    grid_cols: usize,
+    grid_rows: usize,
+    grid_font_scale: f32,
+) layout.Sizes {
+    const grid_render_height = adjustedRenderHeightForMode(.Grid, render_height, ui_scale, grid_rows);
+    return layout.calculateTerminalSizes(font, render_width, grid_render_height, render_height, grid_font_scale, grid_cols, grid_rows, ui_scale);
 }
 
 const SessionIndexSnapshot = struct {
@@ -881,16 +895,7 @@ fn reloadRuntimeFontsForScaleChange(ctx: *RuntimeScaleChangeContext) font_mod.Fo
 }
 
 fn applyRuntimeResizeForScaleChange(ctx: *RuntimeScaleChangeContext) void {
-    const term_render_height = adjustedRenderHeightForMode(ctx.anim_state.mode, ctx.render_height, ctx.ui_scale, ctx.grid_rows);
-    const sizes = layout.calculateTerminalSizes(
-        ctx.font,
-        ctx.render_width,
-        term_render_height,
-        ctx.grid_font_scale,
-        ctx.grid_cols,
-        ctx.grid_rows,
-        ctx.ui_scale,
-    );
+    const sizes = computeTerminalSizes(ctx.font, ctx.render_width, ctx.render_height, ctx.ui_scale, ctx.grid_cols, ctx.grid_rows, ctx.grid_font_scale);
     ctx.full_cols.* = sizes.full.cols;
     ctx.full_rows.* = sizes.full.rows;
     const full_set = fullSetForMode(ctx.anim_state.mode, ctx.anim_state.focused_session, ctx.anim_state.previous_session);
@@ -900,7 +905,7 @@ fn applyRuntimeResizeForScaleChange(ctx: *RuntimeScaleChangeContext) void {
         sizes,
         full_set,
         ctx.render_width,
-        term_render_height,
+        ctx.render_height,
         ctx.ui_scale,
     );
 }
@@ -1340,7 +1345,7 @@ pub fn run() !void {
 
     const initial_view_mode: app_state.ViewMode = if (initial_terminal_count == 1) .Full else .Grid;
     const initial_term_render_height = adjustedRenderHeightForMode(initial_view_mode, render_height, ui_scale, grid.rows);
-    const initial_sizes = layout.calculateTerminalSizes(&font, render_width, initial_term_render_height, config.grid.font_scale, grid.cols, grid.rows, ui_scale);
+    const initial_sizes = computeTerminalSizes(&font, render_width, render_height, ui_scale, grid.cols, grid.rows, config.grid.font_scale);
     var full_cols: u16 = initial_sizes.full.cols;
     var full_rows: u16 = initial_sizes.full.rows;
 
