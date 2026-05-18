@@ -77,9 +77,6 @@ const session_id_buf_len: usize = 32;
 const synchronized_output_timeout_ms: i64 = 1000;
 const synchronized_output_quiet_ms: i64 = 100;
 const synchronized_output_max_timeout_ms: i64 = 5000;
-const terminal_resize_hold_min_ms: i64 = 100;
-const terminal_resize_hold_quiet_ms: i64 = 100;
-const terminal_resize_hold_max_ms: i64 = 500;
 var next_session_id = std.atomic.Value(usize).init(0);
 
 pub const SessionState = struct {
@@ -131,8 +128,6 @@ pub const SessionState = struct {
     quit_capture_active: bool = false,
     synchronized_output_started_ms: i64 = 0,
     synchronized_output_last_output_ms: i64 = 0,
-    terminal_resize_started_ms: i64 = 0,
-    terminal_resize_last_output_ms: i64 = 0,
 
     const WaitContext = struct {
         session: *SessionState,
@@ -303,7 +298,6 @@ pub const SessionState = struct {
         self.quit_capture = .empty;
         self.quit_capture_active = false;
         self.resetSynchronizedOutputTracking();
-        self.resetTerminalResizeHold();
 
         if (self.agent_session_id) |sid| {
             allocator.free(sid);
@@ -452,7 +446,6 @@ pub const SessionState = struct {
         self.quit_capture.clearAndFree(self.allocator);
         self.quit_capture_active = false;
         self.resetSynchronizedOutputTracking();
-        self.resetTerminalResizeHold();
         if (self.process_watcher) |*watcher| {
             watcher.deinit();
             self.process_watcher = null;
@@ -502,58 +495,9 @@ pub const SessionState = struct {
         return false;
     }
 
-    pub fn outputHoldActive(self: *const SessionState) bool {
-        return self.synchronizedOutputActive() or self.terminalResizeHoldActive();
-    }
-
     pub fn resetSynchronizedOutputTracking(self: *SessionState) void {
         self.synchronized_output_started_ms = 0;
         self.synchronized_output_last_output_ms = 0;
-    }
-
-    pub fn beginTerminalResizeHold(self: *SessionState, current_time_ms: i64) void {
-        if (!self.spawned or self.dead) {
-            self.resetTerminalResizeHold();
-            return;
-        }
-        self.terminal_resize_started_ms = current_time_ms;
-        self.terminal_resize_last_output_ms = current_time_ms;
-    }
-
-    pub fn resetTerminalResizeHold(self: *SessionState) void {
-        self.terminal_resize_started_ms = 0;
-        self.terminal_resize_last_output_ms = 0;
-    }
-
-    pub fn expireTerminalResizeHold(self: *SessionState, current_time_ms: i64) bool {
-        if (!self.spawned or self.dead) {
-            self.resetTerminalResizeHold();
-            return false;
-        }
-
-        if (self.terminal_resize_started_ms == 0) return false;
-
-        if (current_time_ms < self.terminal_resize_started_ms) {
-            self.beginTerminalResizeHold(current_time_ms);
-            return false;
-        }
-
-        const active_ms = current_time_ms - self.terminal_resize_started_ms;
-        const quiet_ms = quietDurationMs(
-            current_time_ms,
-            self.terminal_resize_started_ms,
-            self.terminal_resize_last_output_ms,
-        );
-        if (active_ms < terminal_resize_hold_min_ms) return false;
-        if (active_ms < terminal_resize_hold_max_ms and quiet_ms < terminal_resize_hold_quiet_ms) return false;
-
-        self.resetTerminalResizeHold();
-        self.markDirty();
-        return true;
-    }
-
-    fn terminalResizeHoldActive(self: *const SessionState) bool {
-        return self.spawned and !self.dead and self.terminal_resize_started_ms != 0;
     }
 
     pub fn expireSynchronizedOutput(self: *SessionState, current_time_ms: i64) bool {
@@ -610,12 +554,6 @@ pub const SessionState = struct {
         }
     }
 
-    fn updateTerminalResizeHoldActivity(self: *SessionState, current_time_ms: i64) void {
-        if (self.terminalResizeHoldActive()) {
-            self.terminal_resize_last_output_ms = current_time_ms;
-        }
-    }
-
     fn quietDurationMs(current_time_ms: i64, started_ms: i64, last_output_ms: i64) i64 {
         const quiet_started_ms = if (last_output_ms == 0) started_ms else last_output_ms;
         if (current_time_ms <= quiet_started_ms) return 0;
@@ -659,7 +597,6 @@ pub const SessionState = struct {
             try stream.nextSlice(self.output_buf[0..n]);
             const processed_at_ms = std.time.milliTimestamp();
             self.updateSynchronizedOutputState(was_synchronized_output, processed_at_ms);
-            self.updateTerminalResizeHoldActivity(processed_at_ms);
             self.markDirty();
 
             // Keep draining until the PTY would block to avoid frame-bounded
@@ -770,17 +707,7 @@ pub const SessionState = struct {
     pub fn hasForegroundProcess(self: *const SessionState) bool {
         if (!self.spawned or self.dead) return false;
         const shell = self.shell orelse return false;
-        if (getForegroundPgrp(shell.child_pid)) |fg| {
-            return fg != shell.child_pid;
-        }
-        const slave_path_z = ptsname(shell.pty.master) orelse return false;
-        const slave_path = std.mem.sliceTo(slave_path_z, 0);
-        const fd = posix.openZ(slave_path, .{ .ACCMODE = .RDONLY, .NOCTTY = true }, 0) catch {
-            return false;
-        };
-        defer posix.close(fd);
-        const fg_pgrp = tcgetpgrp(fd);
-        if (fg_pgrp < 0) return false;
+        const fg_pgrp = self.foregroundPgrp() orelse return false;
         return fg_pgrp != shell.child_pid;
     }
 
@@ -794,6 +721,21 @@ pub const SessionState = struct {
         if (!self.spawned or self.dead) return null;
         const shell = self.shell orelse return null;
         return shell.pty.master;
+    }
+
+    fn foregroundPgrp(self: *const SessionState) ?posix.pid_t {
+        const shell = self.shell orelse return null;
+        if (getForegroundPgrp(shell.child_pid)) |fg| return fg;
+
+        const slave_path_z = ptsname(shell.pty.master) orelse return null;
+        const slave_path = std.mem.sliceTo(slave_path_z, 0);
+        const fd = posix.openZ(slave_path, .{ .ACCMODE = .RDONLY, .NOCTTY = true }, 0) catch {
+            return null;
+        };
+        defer posix.close(fd);
+        const fg_pgrp = tcgetpgrp(fd);
+        if (fg_pgrp <= 0) return null;
+        return @intCast(fg_pgrp);
     }
 
     pub fn startQuitCapture(self: *SessionState) void {
@@ -829,25 +771,12 @@ pub const SessionState = struct {
         if (!self.spawned or self.dead) return null;
         const shell = self.shell orelse return null;
 
-        const fg_pgrp = blk: {
-            if (getForegroundPgrp(shell.child_pid)) |fg| {
-                log.debug("detectForegroundAgent: shell_pid={d} fg_pgrp_sysctl={d}", .{ shell.child_pid, fg });
-                if (fg == shell.child_pid) {
-                    log.debug("detectForegroundAgent: shell is foreground, no agent", .{});
-                    return null;
-                }
-                break :blk fg;
-            }
-            log.debug("detectForegroundAgent: sysctl fg pgrp unavailable, falling back to tcgetpgrp", .{});
-            const slave_path_z = ptsname(shell.pty.master) orelse return null;
-            const slave_path = std.mem.sliceTo(slave_path_z, 0);
-            const fd = posix.openZ(slave_path, .{ .ACCMODE = .RDONLY, .NOCTTY = true }, 0) catch return null;
-            defer posix.close(fd);
-            const fg = tcgetpgrp(fd);
-            log.debug("detectForegroundAgent: shell_pid={d} fg_pgrp_tcgetpgrp={d}", .{ shell.child_pid, fg });
-            if (fg <= 0 or fg == shell.child_pid) return null;
-            break :blk @as(posix.pid_t, @intCast(fg));
-        };
+        const fg_pgrp = self.foregroundPgrp() orelse return null;
+        log.debug("detectForegroundAgent: shell_pid={d} fg_pgrp={d}", .{ shell.child_pid, fg_pgrp });
+        if (fg_pgrp == shell.child_pid) {
+            log.debug("detectForegroundAgent: shell is foreground, no agent", .{});
+            return null;
+        }
 
         if (detectAgentByPid(fg_pgrp)) |kind| {
             log.debug("detectForegroundAgent: fg_pgrp={d} result={s} (process inspection)", .{ fg_pgrp, kind.name() });
@@ -1111,50 +1040,6 @@ test "synchronized output hard timeout clears chatty sessions" {
     session.terminal.?.modes.set(.synchronized_output, true);
     try std.testing.expect(session.expireSynchronizedOutput(5100));
     try std.testing.expect(!session.synchronizedOutputActive());
-}
-
-test "terminal resize hold waits for output to go quiet" {
-    var session: SessionState = undefined;
-    session.spawned = true;
-    session.dead = false;
-    session.terminal = null;
-    session.render_epoch = 1;
-    session.terminal_resize_started_ms = 100;
-    session.terminal_resize_last_output_ms = 150;
-
-    try std.testing.expect(session.outputHoldActive());
-    try std.testing.expect(!session.expireTerminalResizeHold(200));
-    try std.testing.expect(session.outputHoldActive());
-    try std.testing.expect(session.expireTerminalResizeHold(250));
-    try std.testing.expect(!session.outputHoldActive());
-    try std.testing.expectEqual(@as(u64, 2), session.render_epoch);
-}
-
-test "terminal resize hold keeps future last-output sample" {
-    var session: SessionState = undefined;
-    session.spawned = true;
-    session.dead = false;
-    session.terminal = null;
-    session.render_epoch = 1;
-    session.terminal_resize_started_ms = 100;
-    session.terminal_resize_last_output_ms = 201;
-
-    try std.testing.expect(!session.expireTerminalResizeHold(200));
-    try std.testing.expect(session.outputHoldActive());
-    try std.testing.expectEqual(@as(i64, 201), session.terminal_resize_last_output_ms);
-}
-
-test "terminal resize hold caps chatty sessions" {
-    var session: SessionState = undefined;
-    session.spawned = true;
-    session.dead = false;
-    session.terminal = null;
-    session.render_epoch = 1;
-    session.terminal_resize_started_ms = 100;
-    session.terminal_resize_last_output_ms = 100 + terminal_resize_hold_max_ms - 1;
-
-    try std.testing.expect(session.expireTerminalResizeHold(100 + terminal_resize_hold_max_ms));
-    try std.testing.expect(!session.outputHoldActive());
 }
 
 test "SessionState assigns incrementing ids" {

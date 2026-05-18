@@ -7,8 +7,10 @@ const pty_mod = @import("../pty.zig");
 const renderer_mod = @import("../render/renderer.zig");
 const dpi = @import("../dpi.zig");
 const session_state = @import("../session/state.zig");
+const shell_mod = @import("../shell.zig");
 const vt_stream = @import("../vt_stream.zig");
 
+const log = std.log.scoped(.layout);
 const AnimationState = app_state.AnimationState;
 const SessionState = session_state.SessionState;
 
@@ -113,7 +115,16 @@ pub fn calculateGridCellTerminalSize(font: *const font_mod.Font, window_width: c
     return calculateTerminalSize(font, cell_width, cell_height, grid_font_scale, ui_scale);
 }
 
-pub fn calculateTerminalSizeForMode(font: *const font_mod.Font, window_width: c_int, window_height: c_int, mode: app_state.ViewMode, grid_font_scale: f32, grid_cols: usize, grid_rows: usize, ui_scale: f32) TerminalSize {
+pub fn calculateTerminalSizeForMode(
+    font: *const font_mod.Font,
+    window_width: c_int,
+    window_height: c_int,
+    mode: app_state.ViewMode,
+    grid_font_scale: f32,
+    grid_cols: usize,
+    grid_rows: usize,
+    ui_scale: f32,
+) TerminalSize {
     return switch (mode) {
         .Grid => {
             const grid_dim = @max(grid_cols, grid_rows);
@@ -159,19 +170,19 @@ pub fn applyTerminalResize(
         const shell = &(session.shell orelse continue);
         const terminal = &(session.terminal orelse continue);
 
-        const cells_changed = terminalCellSizeChanged(session.pty_size, cols, rows);
+        const winsize_changed = !std.meta.eql(session.pty_size, new_size);
         const terminal_cells_changed = terminal.cols != cols or terminal.rows != rows;
 
-        if (cells_changed) {
+        if (winsize_changed) {
             shell.pty.setSize(new_size) catch |err| {
-                std.debug.print("Failed to resize PTY for session {d}: {}\n", .{ session.id, err });
+                log.warn("failed to resize PTY session={d} target={d}x{d}: {}", .{ session.id, cols, rows, err });
                 continue;
             };
         }
 
         if (terminal_cells_changed) {
             resizeTerminal(allocator, terminal, cols, rows, new_size) catch |err| {
-                std.debug.print("Failed to resize terminal for session {d}: {}\n", .{ session.id, err });
+                log.warn("failed to resize VT session={d} target={d}x{d}: {}", .{ session.id, cols, rows, err });
                 continue;
             };
 
@@ -179,18 +190,19 @@ pub fn applyTerminalResize(
                 session.stream = vt_stream.initStream(allocator, terminal, shell);
             }
             session.resetSynchronizedOutputTracking();
-            session.beginTerminalResizeHold(std.time.milliTimestamp());
             session.markDirty();
             terminal_resized = true;
+        }
+
+        // DEC 2048 reports carry pixel fields, so apps tracking pixel
+        // geometry need them even when the cell count is unchanged.
+        if (winsize_changed and terminal.modes.get(.in_band_size_reports)) {
+            sendInBandSizeReport(shell, new_size);
         }
 
         session.pty_size = new_size;
     }
     return terminal_resized;
-}
-
-fn terminalCellSizeChanged(current: pty_mod.winsize, cols: u16, rows: u16) bool {
-    return current.ws_col != cols or current.ws_row != rows;
 }
 
 fn resizeTerminal(
@@ -203,7 +215,21 @@ fn resizeTerminal(
     try terminal.resize(allocator, cols, rows);
     terminal.width_px = @intCast(size.ws_xpixel);
     terminal.height_px = @intCast(size.ws_ypixel);
+    // Spec-allowed by DEC mode 2026: clear synchronized output on resize so the
+    // change is shown immediately rather than buffered.
     terminal.modes.set(.synchronized_output, false);
+}
+
+/// Write a DEC mode 2048 in-band size report to the shell. Apps that opt into
+/// mode 2048 (nvim does) detect resizes via this report rather than SIGWINCH;
+/// without it, they keep drawing at the pre-resize dimensions. Matches
+/// ghostty's `src/termio/Termio.zig:sizeReportLocked` mode_2048 branch.
+fn sendInBandSizeReport(shell: *shell_mod.Shell, size: pty_mod.winsize) void {
+    var buf: [64]u8 = undefined;
+    const report = vt_stream.formatInBandSizeReport(&buf, size.ws_row, size.ws_col, size.ws_ypixel, size.ws_xpixel) catch return;
+    _ = shell.write(report) catch |err| {
+        log.warn("failed to write in-band size report: {}", .{err});
+    };
 }
 
 test "grid mode sizes terminals to the rendered tile area" {
@@ -220,19 +246,6 @@ test "grid mode sizes terminals to the rendered tile area" {
     try std.testing.expectEqual(full, calculateTerminalSizeForMode(&font, 1200, 800, .Expanding, 1.0, 2, 1, 1.0));
     try std.testing.expectEqual(full, calculateTerminalSizeForMode(&font, 1200, 800, .Collapsing, 1.0, 2, 1, 1.0));
     try std.testing.expectEqual(full, calculateTerminalSizeForMode(&font, 1200, 800, .GridResizing, 1.0, 2, 1, 1.0));
-}
-
-test "terminal cell size ignores pixel-only resize differences" {
-    const size = pty_mod.winsize{
-        .ws_row = 40,
-        .ws_col = 120,
-        .ws_xpixel = 1200,
-        .ws_ypixel = 800,
-    };
-
-    try std.testing.expect(!terminalCellSizeChanged(size, 120, 40));
-    try std.testing.expect(terminalCellSizeChanged(size, 121, 40));
-    try std.testing.expect(terminalCellSizeChanged(size, 120, 41));
 }
 
 test "terminal resize preserves prompt contents when shell does not redraw" {

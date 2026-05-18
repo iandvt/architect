@@ -40,6 +40,16 @@ pub const Handler = struct {
             .color_operation => try self.handleColorOperation(value),
             .request_mode => try self.handleRequestMode(value.mode),
             .request_mode_unknown => try self.handleRequestModeUnknown(value.mode, value.ansi),
+            .set_mode => {
+                try self.readonly.vt(action, value);
+                // DEC mode 2048 (in-band size reports): apps that enable this
+                // expect a size report whenever the terminal is resized AND an
+                // initial report when the mode is first enabled. Matches
+                // ghostty's stream_handler.zig in_band_size_reports branch.
+                if (value.mode == .in_band_size_reports and self.terminal.modes.get(.in_band_size_reports)) {
+                    self.sendInBandSizeReport();
+                }
+            },
             .kitty_keyboard_push => {
                 log.debug("kitty_keyboard_push: flags={d}", .{value.flags.int()});
                 try self.readonly.vt(action, value);
@@ -135,6 +145,17 @@ pub const Handler = struct {
         _ = try self.shell.write(resp);
     }
 
+    /// Emit DEC mode 2048 in-band size report. Used both when the app enables
+    /// the mode (initial sync) and after every PTY resize so apps that rely
+    /// on this instead of SIGWINCH (e.g. nvim) see the new dimensions.
+    fn sendInBandSizeReport(self: *Handler) void {
+        var buf: [64]u8 = undefined;
+        const report = formatInBandSizeReport(&buf, self.terminal.rows, self.terminal.cols, self.terminal.height_px, self.terminal.width_px) catch return;
+        _ = self.shell.write(report) catch |err| {
+            log.warn("failed to write in-band size report: {}", .{err});
+        };
+    }
+
     fn handleColorOperation(self: *Handler, op: color_operation_value) !void {
         var it = op.requests.constIterator(0);
         while (it.next()) |request| {
@@ -226,6 +247,10 @@ fn formatModeReportResponse(buf: []u8, mode: ghostty_vt.Mode, enabled: bool) err
     });
 }
 
+pub fn formatInBandSizeReport(buf: []u8, rows: anytype, cols: anytype, height_px: anytype, width_px: anytype) error{NoSpaceLeft}![]u8 {
+    return std.fmt.bufPrint(buf, "\x1b[48;{d};{d};{d};{d}t", .{ rows, cols, height_px, width_px });
+}
+
 fn formatUnknownModeReportResponse(buf: []u8, mode_raw: u16, ansi: bool) error{NoSpaceLeft}![]u8 {
     return std.fmt.bufPrint(buf, "\x1b[{s}{d};0$y", .{
         if (ansi) "" else "?",
@@ -286,6 +311,12 @@ test "formatModeReportResponse reports disabled DEC modes" {
     var buf: [32]u8 = undefined;
     const resp = try formatModeReportResponse(&buf, .synchronized_output, false);
     try std.testing.expectEqualSlices(u8, "\x1b[?2026;2$y", resp);
+}
+
+test "formatInBandSizeReport emits mode 2048 size report" {
+    var buf: [64]u8 = undefined;
+    const resp = try formatInBandSizeReport(&buf, 38, 200, 1866, 3808);
+    try std.testing.expectEqualSlices(u8, "\x1b[48;38;200;1866;3808t", resp);
 }
 
 test "formatUnknownModeReportResponse preserves private and ansi mode prefixes" {

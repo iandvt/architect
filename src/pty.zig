@@ -127,6 +127,10 @@ const PosixPty = struct {
             return error.IoctlFailed;
     }
 
+    fn getSizeOnFd(fd: Fd, size: *winsize) bool {
+        return c.ioctl(fd, TIOCGWINSZ, @intFromPtr(size)) == 0;
+    }
+
     pub const ChildPreExecError = error{ ProcessGroupFailed, SetControllingTerminalFailed };
 
     pub fn childPreExec(self: Pty) ChildPreExecError!void {
@@ -161,5 +165,23 @@ const PosixPty = struct {
                 return error.SetControllingTerminalFailed;
             },
         }
+
+        // The pre-dup2 fds are no longer needed; stdin/stdout/stderr already point
+        // at the slave. Match ghostty's close pattern.
+        posix.close(self.slave);
+        posix.close(self.master);
     }
 };
+
+test "setSize updates slave winsize via master ioctl" {
+    var pty = try Pty.open(.{ .ws_row = 24, .ws_col = 80, .ws_xpixel = 800, .ws_ypixel = 600 });
+    defer pty.deinit();
+    defer posix.close(pty.slave);
+
+    try pty.setSize(.{ .ws_row = 40, .ws_col = 120, .ws_xpixel = 1200, .ws_ypixel = 800 });
+
+    var actual: winsize = undefined;
+    try std.testing.expect(PosixPty.getSizeOnFd(pty.slave, &actual));
+    try std.testing.expectEqual(@as(u16, 40), actual.ws_row);
+    try std.testing.expectEqual(@as(u16, 120), actual.ws_col);
+}
