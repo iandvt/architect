@@ -1039,9 +1039,12 @@ pub const Shell = struct {
         if (pid < 0) return error.ForkFailed;
 
         if (pid == 0) {
-            // Child: claim the PTY as controlling terminal and exec the shell with
-            // session metadata injected for external notification hooks.
-            try pty_instance.childPreExec();
+            // Match ghostty's order: dup2 first so stdin/stdout/stderr point at the
+            // slave before childPreExec rebinds the controlling terminal and closes
+            // the original master/slave fds.
+            posix.dup2(pty_instance.slave, posix.STDIN_FILENO) catch std.c._exit(1);
+            posix.dup2(pty_instance.slave, posix.STDOUT_FILENO) catch std.c._exit(1);
+            posix.dup2(pty_instance.slave, posix.STDERR_FILENO) catch std.c._exit(1);
 
             if (libc.setenv(name_session.ptr, session_id, 1) != 0) {
                 std.c._exit(1);
@@ -1079,9 +1082,7 @@ pub const Shell = struct {
                 posix.chdir(dir) catch {};
             }
 
-            posix.dup2(pty_instance.slave, posix.STDIN_FILENO) catch std.c._exit(1);
-            posix.dup2(pty_instance.slave, posix.STDOUT_FILENO) catch std.c._exit(1);
-            posix.dup2(pty_instance.slave, posix.STDERR_FILENO) catch std.c._exit(1);
+            try pty_instance.childPreExec();
 
             const shell_path_z = @as([*:0]const u8, @ptrCast(shell_path.ptr));
             const login_flag = "-l\x00";

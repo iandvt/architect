@@ -6,8 +6,6 @@ const posix = std.posix;
 
 const log = std.log.scoped(.pty);
 
-extern "c" fn ttyname(fd: posix.fd_t) ?[*:0]const u8;
-
 // zwanzig-disable: identifier-style
 pub const winsize = extern struct {
     ws_row: u16 = 24,
@@ -52,8 +50,6 @@ const PosixPty = struct {
 
     master: Fd,
     slave: Fd,
-    slave_path: [std.fs.max_path_bytes]u8,
-    slave_path_len: usize,
 
     pub const OpenError = error{OpenptyFailed};
 
@@ -76,12 +72,6 @@ const PosixPty = struct {
             _ = posix.system.close(master_fd);
             _ = posix.system.close(slave_fd);
         }
-
-        const slave_path_z = ttyname(slave_fd) orelse return error.OpenptyFailed;
-        const slave_path_slice = std.mem.sliceTo(slave_path_z, 0);
-        if (slave_path_slice.len > std.fs.max_path_bytes) return error.OpenptyFailed;
-        var slave_path_buf: [std.fs.max_path_bytes]u8 = undefined;
-        @memcpy(slave_path_buf[0..slave_path_slice.len], slave_path_slice);
 
         cloexec: {
             const flags = std.posix.fcntl(master_fd, std.posix.F.GETFD, 0) catch |err| {
@@ -109,8 +99,6 @@ const PosixPty = struct {
         return .{
             .master = master_fd,
             .slave = slave_fd,
-            .slave_path = slave_path_buf,
-            .slave_path_len = slave_path_slice.len,
         };
     }
 
@@ -135,39 +123,8 @@ const PosixPty = struct {
     pub const SetSizeError = error{IoctlFailed};
 
     pub fn setSize(self: *Pty, size: winsize) SetSizeError!void {
-        var size_copy = size;
-        log.debug("set PTY winsize rows={d} cols={d} pixels={d}x{d} slave_path={s}", .{
-            size.ws_row,
-            size.ws_col,
-            size.ws_xpixel,
-            size.ws_ypixel,
-            self.slave_path[0..self.slave_path_len],
-        });
-
-        if (setSizeOnFd(self.master, &size_copy)) {
-            log.debug("set PTY winsize via master succeeded", .{});
-            return;
-        }
-        log.debug("set PTY winsize via master failed; trying slave fd", .{});
-        if (self.setSizeOnSlave(&size_copy)) {
-            log.debug("set PTY winsize via slave succeeded", .{});
-            return;
-        }
-        log.debug("set PTY winsize via slave failed", .{});
-        return error.IoctlFailed;
-    }
-
-    fn setSizeOnSlave(self: *Pty, size: *winsize) bool {
-        if (self.slave_path_len == 0) return false;
-        const slave_fd = posix.open(self.slave_path[0..self.slave_path_len], .{ .ACCMODE = .RDONLY, .NOCTTY = true }, 0) catch {
-            return false;
-        };
-        defer posix.close(slave_fd);
-        return setSizeOnFd(slave_fd, size);
-    }
-
-    fn setSizeOnFd(fd: Fd, size: *winsize) bool {
-        return c.ioctl(fd, TIOCSWINSZ, @intFromPtr(size)) == 0;
+        if (c.ioctl(self.master, TIOCSWINSZ, @intFromPtr(&size)) < 0)
+            return error.IoctlFailed;
     }
 
     fn getSizeOnFd(fd: Fd, size: *winsize) bool {
@@ -198,7 +155,6 @@ const PosixPty = struct {
         posix.sigaction(posix.SIG.TRAP, &sa, null);
         posix.sigaction(posix.SIG.TERM, &sa, null);
         posix.sigaction(posix.SIG.QUIT, &sa, null);
-        posix.sigaction(posix.SIG.WINCH, &sa, null);
 
         if (setsid() < 0) return error.ProcessGroupFailed;
 
@@ -209,14 +165,18 @@ const PosixPty = struct {
                 return error.SetControllingTerminalFailed;
             },
         }
+
+        // The pre-dup2 fds are no longer needed; stdin/stdout/stderr already point
+        // at the slave. Match ghostty's close pattern.
+        posix.close(self.slave);
+        posix.close(self.master);
     }
 };
 
-test "setSize updates slave winsize" {
+test "setSize updates slave winsize via master ioctl" {
     var pty = try Pty.open(.{ .ws_row = 24, .ws_col = 80, .ws_xpixel = 800, .ws_ypixel = 600 });
     defer pty.deinit();
     defer posix.close(pty.slave);
-    try std.testing.expect(pty.slave_path_len > 0);
 
     try pty.setSize(.{ .ws_row = 40, .ws_col = 120, .ws_xpixel = 1200, .ws_ypixel = 800 });
 

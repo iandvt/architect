@@ -77,21 +77,7 @@ const session_id_buf_len: usize = 32;
 const synchronized_output_timeout_ms: i64 = 1000;
 const synchronized_output_quiet_ms: i64 = 100;
 const synchronized_output_max_timeout_ms: i64 = 5000;
-const terminal_resize_hold_min_ms: i64 = 100;
-const terminal_resize_hold_quiet_ms: i64 = 100;
-const terminal_resize_hold_max_ms: i64 = 500;
-const terminal_resize_trace_ms: i64 = 1000;
-const terminal_resize_wake_nudge_ms: i64 = 100;
-const terminal_resize_winch_nudge_ms: i64 = 250;
-const terminal_resize_redraw_nudge_ms: i64 = 500;
-const terminal_resize_focus_in = "\x1b[I";
-const terminal_resize_redraw_key = "\x0c";
 var next_session_id = std.atomic.Value(usize).init(0);
-
-const VimRedrawNudgeSkipReason = enum {
-    screen_not_alternate,
-    cursor_style_bar,
-};
 
 pub const SessionState = struct {
     slot_index: usize,
@@ -142,16 +128,6 @@ pub const SessionState = struct {
     quit_capture_active: bool = false,
     synchronized_output_started_ms: i64 = 0,
     synchronized_output_last_output_ms: i64 = 0,
-    synchronized_output_hold_agent: ?AgentKind = null,
-    terminal_resize_started_ms: i64 = 0,
-    terminal_resize_last_output_ms: i64 = 0,
-    terminal_resize_hold_agent: ?AgentKind = null,
-    terminal_resize_trace_started_ms: i64 = 0,
-    terminal_resize_trace_until_ms: i64 = 0,
-    terminal_resize_trace_saw_output: bool = false,
-    terminal_resize_wake_nudge_sent: bool = false,
-    terminal_resize_winch_nudge_sent: bool = false,
-    terminal_resize_redraw_nudge_sent: bool = false,
 
     const WaitContext = struct {
         session: *SessionState,
@@ -322,8 +298,6 @@ pub const SessionState = struct {
         self.quit_capture = .empty;
         self.quit_capture_active = false;
         self.resetSynchronizedOutputTracking();
-        self.resetTerminalResizeHold();
-        self.resetTerminalResizeTrace();
 
         if (self.agent_session_id) |sid| {
             allocator.free(sid);
@@ -472,7 +446,6 @@ pub const SessionState = struct {
         self.quit_capture.clearAndFree(self.allocator);
         self.quit_capture_active = false;
         self.resetSynchronizedOutputTracking();
-        self.resetTerminalResizeHold();
         if (self.process_watcher) |*watcher| {
             watcher.deinit();
             self.process_watcher = null;
@@ -522,122 +495,9 @@ pub const SessionState = struct {
         return false;
     }
 
-    pub fn outputHoldActive(self: *const SessionState) bool {
-        return self.synchronizedOutputHoldActive() or self.terminalResizeHoldActive();
-    }
-
     pub fn resetSynchronizedOutputTracking(self: *SessionState) void {
         self.synchronized_output_started_ms = 0;
         self.synchronized_output_last_output_ms = 0;
-        self.synchronized_output_hold_agent = null;
-    }
-
-    pub fn beginTerminalResizeHold(self: *SessionState, current_time_ms: i64, agent_kind: ?AgentKind) void {
-        const kind = agent_kind orelse {
-            self.resetTerminalResizeHold();
-            return;
-        };
-        if (!self.spawned or self.dead) {
-            self.resetTerminalResizeHold();
-            return;
-        }
-        self.terminal_resize_hold_agent = kind;
-        self.terminal_resize_started_ms = current_time_ms;
-        self.terminal_resize_last_output_ms = current_time_ms;
-    }
-
-    pub fn resetTerminalResizeHold(self: *SessionState) void {
-        self.terminal_resize_started_ms = 0;
-        self.terminal_resize_last_output_ms = 0;
-        self.terminal_resize_hold_agent = null;
-    }
-
-    pub fn beginTerminalResizeTrace(self: *SessionState, current_time_ms: i64) void {
-        self.terminal_resize_trace_started_ms = current_time_ms;
-        self.terminal_resize_trace_until_ms = current_time_ms + terminal_resize_trace_ms;
-        self.terminal_resize_trace_saw_output = false;
-        self.terminal_resize_wake_nudge_sent = false;
-        self.terminal_resize_winch_nudge_sent = false;
-        self.terminal_resize_redraw_nudge_sent = false;
-    }
-
-    fn resetTerminalResizeTrace(self: *SessionState) void {
-        self.terminal_resize_trace_started_ms = 0;
-        self.terminal_resize_trace_until_ms = 0;
-        self.terminal_resize_trace_saw_output = false;
-        self.terminal_resize_wake_nudge_sent = false;
-        self.terminal_resize_winch_nudge_sent = false;
-        self.terminal_resize_redraw_nudge_sent = false;
-    }
-
-    pub fn updateTerminalResizeTrace(self: *SessionState, current_time_ms: i64) void {
-        if (self.terminal_resize_trace_until_ms == 0) return;
-
-        if (!self.terminal_resize_trace_saw_output and
-            !self.terminal_resize_wake_nudge_sent and
-            current_time_ms >= self.terminal_resize_trace_started_ms + terminal_resize_wake_nudge_ms)
-        {
-            self.terminal_resize_wake_nudge_sent = true;
-            self.nudgeForegroundVimResize();
-        }
-
-        if (!self.terminal_resize_trace_saw_output and
-            self.terminal_resize_wake_nudge_sent and
-            !self.terminal_resize_winch_nudge_sent and
-            current_time_ms >= self.terminal_resize_trace_started_ms + terminal_resize_winch_nudge_ms)
-        {
-            self.terminal_resize_winch_nudge_sent = true;
-            self.nudgeForegroundVimWinch();
-        }
-
-        if (!self.terminal_resize_trace_saw_output and
-            self.terminal_resize_winch_nudge_sent and
-            !self.terminal_resize_redraw_nudge_sent and
-            current_time_ms >= self.terminal_resize_trace_started_ms + terminal_resize_redraw_nudge_ms)
-        {
-            self.terminal_resize_redraw_nudge_sent = true;
-            self.nudgeForegroundVimRedraw();
-        }
-
-        if (current_time_ms < self.terminal_resize_trace_until_ms) return;
-
-        self.logTerminalResizeTrace("terminal resize output trace expired", 0, current_time_ms);
-        self.resetTerminalResizeTrace();
-    }
-
-    pub fn expireTerminalResizeHold(self: *SessionState, current_time_ms: i64) bool {
-        if (!self.spawned or self.dead) {
-            self.resetTerminalResizeHold();
-            return false;
-        }
-
-        if (self.terminal_resize_started_ms == 0) return false;
-
-        if (current_time_ms < self.terminal_resize_started_ms) {
-            self.beginTerminalResizeHold(current_time_ms, self.terminal_resize_hold_agent);
-            return false;
-        }
-
-        const active_ms = current_time_ms - self.terminal_resize_started_ms;
-        const quiet_ms = quietDurationMs(
-            current_time_ms,
-            self.terminal_resize_started_ms,
-            self.terminal_resize_last_output_ms,
-        );
-        if (active_ms < terminal_resize_hold_min_ms) return false;
-        if (active_ms < terminal_resize_hold_max_ms and quiet_ms < terminal_resize_hold_quiet_ms) return false;
-
-        self.resetTerminalResizeHold();
-        self.markDirty();
-        return true;
-    }
-
-    fn terminalResizeHoldActive(self: *const SessionState) bool {
-        return self.spawned and !self.dead and self.terminal_resize_started_ms != 0 and self.terminal_resize_hold_agent != null;
-    }
-
-    fn synchronizedOutputHoldActive(self: *const SessionState) bool {
-        return self.synchronizedOutputActive() and self.synchronized_output_hold_agent != null;
     }
 
     pub fn expireSynchronizedOutput(self: *SessionState, current_time_ms: i64) bool {
@@ -652,11 +512,6 @@ pub const SessionState = struct {
         };
 
         if (!terminal.modes.get(.synchronized_output)) {
-            self.resetSynchronizedOutputTracking();
-            return false;
-        }
-
-        if (self.synchronized_output_hold_agent == null) {
             self.resetSynchronizedOutputTracking();
             return false;
         }
@@ -690,163 +545,13 @@ pub const SessionState = struct {
 
         const is_active = terminal.modes.get(.synchronized_output);
         if (is_active) {
-            if (!was_active or self.synchronized_output_started_ms == 0 or self.synchronized_output_hold_agent == null) {
-                const agent_kind = self.detectOutputHoldAgent() orelse {
-                    self.resetSynchronizedOutputTracking();
-                    return;
-                };
-                self.synchronized_output_hold_agent = agent_kind;
+            if (!was_active or self.synchronized_output_started_ms == 0) {
                 self.synchronized_output_started_ms = current_time_ms;
             }
             self.synchronized_output_last_output_ms = current_time_ms;
         } else {
             self.resetSynchronizedOutputTracking();
         }
-    }
-
-    fn updateTerminalResizeHoldActivity(self: *SessionState, current_time_ms: i64) void {
-        if (self.terminalResizeHoldActive()) {
-            self.terminal_resize_last_output_ms = current_time_ms;
-        }
-    }
-
-    fn updateTerminalResizeTraceActivity(self: *SessionState, bytes: usize, current_time_ms: i64) void {
-        if (self.terminal_resize_trace_until_ms == 0) return;
-        if (current_time_ms > self.terminal_resize_trace_until_ms) return;
-
-        self.terminal_resize_trace_saw_output = true;
-        self.logTerminalResizeTrace("terminal resize output observed", bytes, current_time_ms);
-    }
-
-    fn logTerminalResizeTrace(self: *const SessionState, message: []const u8, bytes: usize, current_time_ms: i64) void {
-        const terminal = if (self.terminal) |*terminal| terminal else {
-            log.debug("{s} session={d} bytes={d} terminal=null saw_output={} wake_nudge={} winch_nudge={} redraw_nudge={}", .{
-                message,
-                self.id,
-                bytes,
-                self.terminal_resize_trace_saw_output,
-                self.terminal_resize_wake_nudge_sent,
-                self.terminal_resize_winch_nudge_sent,
-                self.terminal_resize_redraw_nudge_sent,
-            });
-            return;
-        };
-        const screen = terminal.screens.active;
-        const remaining_ms: i64 = if (self.terminal_resize_trace_until_ms > current_time_ms)
-            self.terminal_resize_trace_until_ms - current_time_ms
-        else
-            0;
-        log.debug("{s} session={d} bytes={d} vt={d}x{d} pty={d}x{d} screen={s} cursor={d},{d} cursor_style={s} saw_output={} wake_nudge={} winch_nudge={} redraw_nudge={} remaining_ms={d}", .{
-            message,
-            self.id,
-            bytes,
-            terminal.cols,
-            terminal.rows,
-            self.pty_size.ws_col,
-            self.pty_size.ws_row,
-            @tagName(terminal.screens.active_key),
-            screen.cursor.x,
-            screen.cursor.y,
-            @tagName(screen.cursor.cursor_style),
-            self.terminal_resize_trace_saw_output,
-            self.terminal_resize_wake_nudge_sent,
-            self.terminal_resize_winch_nudge_sent,
-            self.terminal_resize_redraw_nudge_sent,
-            remaining_ms,
-        });
-    }
-
-    fn nudgeForegroundVimResize(self: *SessionState) void {
-        if (!self.spawned or self.dead) return;
-        const shell = &(self.shell orelse return);
-        const terminal = if (self.terminal) |*terminal| terminal else return;
-
-        var comm_buf: [64]u8 = undefined;
-        const comm = self.foregroundProcessComm(&comm_buf) orelse return;
-        if (!isVimLikeProcessName(comm)) return;
-
-        if (!terminal.modes.get(.focus_event)) {
-            log.debug("skipped vim resize wake nudge session={d} process={s} focus_event=false", .{ self.id, comm });
-            return;
-        }
-
-        const written = shell.write(terminal_resize_focus_in) catch |err| {
-            log.debug("failed to send vim resize wake nudge session={d} process={s}: {}", .{ self.id, comm, err });
-            return;
-        };
-        if (written < terminal_resize_focus_in.len) {
-            self.pending_write.appendSlice(self.allocator, terminal_resize_focus_in[written..]) catch |err| {
-                log.warn("failed to queue vim resize wake nudge session={d} process={s}: {}", .{ self.id, comm, err });
-                return;
-            };
-        }
-        log.debug("sent vim resize wake nudge session={d} process={s} sequence=focus_in", .{ self.id, comm });
-    }
-
-    fn nudgeForegroundVimWinch(self: *SessionState) void {
-        if (!self.spawned or self.dead) return;
-        const terminal = if (self.terminal) |*terminal| terminal else return;
-
-        var comm_buf: [64]u8 = undefined;
-        const comm = self.foregroundProcessComm(&comm_buf) orelse return;
-        if (!isVimLikeProcessName(comm)) return;
-
-        const active_key = terminal.screens.active_key;
-        if (active_key != .alternate) {
-            log.debug("skipped vim resize winch nudge session={d} process={s} reason=screen_not_alternate screen={s}", .{
-                self.id,
-                comm,
-                @tagName(active_key),
-            });
-            return;
-        }
-
-        log.debug("sending vim resize winch nudge session={d} process={s} screen={s}", .{
-            self.id,
-            comm,
-            @tagName(active_key),
-        });
-        self.notifyTerminalResize();
-    }
-
-    fn nudgeForegroundVimRedraw(self: *SessionState) void {
-        if (!self.spawned or self.dead) return;
-        const shell = &(self.shell orelse return);
-        const terminal = if (self.terminal) |*terminal| terminal else return;
-
-        var comm_buf: [64]u8 = undefined;
-        const comm = self.foregroundProcessComm(&comm_buf) orelse return;
-        if (!isVimLikeProcessName(comm)) return;
-
-        const active_key = terminal.screens.active_key;
-        const cursor_style = terminal.screens.active.cursor.cursor_style;
-        if (vimRedrawNudgeSkipReason(active_key, cursor_style)) |reason| {
-            log.debug("skipped vim resize redraw nudge session={d} process={s} reason={s} screen={s} cursor_style={s}", .{
-                self.id,
-                comm,
-                @tagName(reason),
-                @tagName(active_key),
-                @tagName(cursor_style),
-            });
-            return;
-        }
-
-        const written = shell.write(terminal_resize_redraw_key) catch |err| {
-            log.debug("failed to send vim resize redraw nudge session={d} process={s}: {}", .{ self.id, comm, err });
-            return;
-        };
-        if (written < terminal_resize_redraw_key.len) {
-            self.pending_write.appendSlice(self.allocator, terminal_resize_redraw_key[written..]) catch |err| {
-                log.warn("failed to queue vim resize redraw nudge session={d} process={s}: {}", .{ self.id, comm, err });
-                return;
-            };
-        }
-        log.debug("sent vim resize redraw nudge session={d} process={s} sequence=ctrl_l screen={s} cursor_style={s}", .{
-            self.id,
-            comm,
-            @tagName(active_key),
-            @tagName(cursor_style),
-        });
     }
 
     fn quietDurationMs(current_time_ms: i64, started_ms: i64, last_output_ms: i64) i64 {
@@ -892,8 +597,6 @@ pub const SessionState = struct {
             try stream.nextSlice(self.output_buf[0..n]);
             const processed_at_ms = std.time.milliTimestamp();
             self.updateSynchronizedOutputState(was_synchronized_output, processed_at_ms);
-            self.updateTerminalResizeHoldActivity(processed_at_ms);
-            self.updateTerminalResizeTraceActivity(n, processed_at_ms);
             self.markDirty();
 
             // Keep draining until the PTY would block to avoid frame-bounded
@@ -1020,22 +723,6 @@ pub const SessionState = struct {
         return shell.pty.master;
     }
 
-    pub fn notifyTerminalResize(self: *const SessionState) void {
-        if (!self.spawned or self.dead) return;
-        const shell = self.shell orelse return;
-        const fg_pgrp = self.foregroundPgrp() orelse blk: {
-            log.debug("terminal resize notify session={d} shell_pid={d} foreground_pgrp=null using shell pid", .{ self.id, shell.child_pid });
-            break :blk shell.child_pid;
-        };
-        if (fg_pgrp <= 0) return;
-
-        const target_pid = -fg_pgrp;
-        switch (posix.errno(std.c.kill(target_pid, std.c.SIG.WINCH))) {
-            .SUCCESS => log.debug("sent SIGWINCH session={d} shell_pid={d} pgrp={d}", .{ self.id, shell.child_pid, fg_pgrp }),
-            else => |err| log.debug("failed to send SIGWINCH session={d} shell_pid={d} pgrp={d} errno={}", .{ self.id, shell.child_pid, fg_pgrp, err }),
-        }
-    }
-
     fn foregroundPgrp(self: *const SessionState) ?posix.pid_t {
         const shell = self.shell orelse return null;
         if (getForegroundPgrp(shell.child_pid)) |fg| return fg;
@@ -1049,14 +736,6 @@ pub const SessionState = struct {
         const fg_pgrp = tcgetpgrp(fd);
         if (fg_pgrp <= 0) return null;
         return @intCast(fg_pgrp);
-    }
-
-    fn foregroundProcessComm(self: *const SessionState, dest: []u8) ?[]const u8 {
-        if (!self.spawned or self.dead) return null;
-        const shell = self.shell orelse return null;
-        const fg_pgrp = self.foregroundPgrp() orelse return null;
-        if (fg_pgrp == shell.child_pid) return null;
-        return readProcessComm(fg_pgrp, dest);
     }
 
     pub fn startQuitCapture(self: *SessionState) void {
@@ -1132,12 +811,6 @@ pub const SessionState = struct {
         log.debug("detectForegroundAgent: fg_pgrp={d} result=null", .{fg_pgrp});
         return null;
     }
-
-    pub fn detectOutputHoldAgent(self: *const SessionState) ?AgentKind {
-        if (!self.spawned or self.dead) return null;
-        if (builtin.os.tag == .macos) return self.detectForegroundAgent();
-        return self.agent_icon orelse self.agent_kind;
-    }
 };
 
 fn terminalColorsFromTheme(theme: colors_mod.Theme) ghostty_vt.Terminal.Colors {
@@ -1204,23 +877,6 @@ fn oscFallbackEligible(pid: posix.pid_t) bool {
     var comm_buf: [32]u8 = undefined;
     const comm = readProcessComm(pid, &comm_buf) orelse return false;
     return std.mem.eql(u8, comm, "node");
-}
-
-fn isVimLikeProcessName(comm: []const u8) bool {
-    return std.mem.eql(u8, comm, "nvim") or
-        std.mem.eql(u8, comm, "vim") or
-        std.mem.eql(u8, comm, "view") or
-        std.mem.eql(u8, comm, "nvimdiff") or
-        std.mem.eql(u8, comm, "vimdiff");
-}
-
-fn vimRedrawNudgeSkipReason(
-    active_key: ghostty_vt.ScreenSet.Key,
-    cursor_style: ghostty_vt.CursorStyle,
-) ?VimRedrawNudgeSkipReason {
-    if (active_key != .alternate) return .screen_not_alternate;
-    if (cursor_style == .bar) return .cursor_style_bar;
-    return null;
 }
 
 fn readProcessComm(pid: posix.pid_t, dest: []u8) ?[]const u8 {
@@ -1297,7 +953,6 @@ test "synchronized output timeout clears stuck terminal mode" {
     session.dead = false;
     session.render_epoch = 1;
     session.synchronized_output_started_ms = 100;
-    session.synchronized_output_hold_agent = .codex;
     session.terminal = try ghostty_vt.Terminal.init(allocator, .{
         .cols = 10,
         .rows = 3,
@@ -1322,7 +977,6 @@ test "synchronized output timeout resets when mode is already clear" {
     session.dead = false;
     session.render_epoch = 1;
     session.synchronized_output_started_ms = 100;
-    session.synchronized_output_hold_agent = .codex;
     session.terminal = try ghostty_vt.Terminal.init(allocator, .{
         .cols = 10,
         .rows = 3,
@@ -1344,7 +998,6 @@ test "synchronized output timeout waits for output to go quiet" {
     session.render_epoch = 1;
     session.synchronized_output_started_ms = 100;
     session.synchronized_output_last_output_ms = 1050;
-    session.synchronized_output_hold_agent = .codex;
     session.terminal = try ghostty_vt.Terminal.init(allocator, .{
         .cols = 10,
         .rows = 3,
@@ -1368,7 +1021,6 @@ test "synchronized output keeps future last-output sample" {
     session.render_epoch = 1;
     session.synchronized_output_started_ms = 100;
     session.synchronized_output_last_output_ms = 1101;
-    session.synchronized_output_hold_agent = .codex;
     session.terminal = try ghostty_vt.Terminal.init(allocator, .{
         .cols = 10,
         .rows = 3,
@@ -1391,7 +1043,6 @@ test "synchronized output hard timeout clears chatty sessions" {
     session.render_epoch = 1;
     session.synchronized_output_started_ms = 100;
     session.synchronized_output_last_output_ms = 5099;
-    session.synchronized_output_hold_agent = .codex;
     session.terminal = try ghostty_vt.Terminal.init(allocator, .{
         .cols = 10,
         .rows = 3,
@@ -1402,110 +1053,6 @@ test "synchronized output hard timeout clears chatty sessions" {
     session.terminal.?.modes.set(.synchronized_output, true);
     try std.testing.expect(session.expireSynchronizedOutput(5100));
     try std.testing.expect(!session.synchronizedOutputActive());
-}
-
-test "synchronized output timeout ignores non-agent sessions" {
-    const allocator = std.testing.allocator;
-
-    var session: SessionState = undefined;
-    session.spawned = true;
-    session.dead = false;
-    session.render_epoch = 1;
-    session.synchronized_output_started_ms = 100;
-    session.synchronized_output_last_output_ms = 100;
-    session.synchronized_output_hold_agent = null;
-    session.terminal_resize_started_ms = 0;
-    session.terminal_resize_hold_agent = null;
-    session.terminal = try ghostty_vt.Terminal.init(allocator, .{
-        .cols = 10,
-        .rows = 3,
-        .max_scrollback = 5,
-    });
-    defer session.terminal.?.deinit(allocator);
-
-    session.terminal.?.modes.set(.synchronized_output, true);
-    try std.testing.expect(!session.outputHoldActive());
-    try std.testing.expect(!session.expireSynchronizedOutput(5100));
-    try std.testing.expect(session.synchronizedOutputActive());
-    try std.testing.expectEqual(@as(u64, 1), session.render_epoch);
-}
-
-test "terminal resize hold waits for output to go quiet" {
-    var session: SessionState = undefined;
-    session.spawned = true;
-    session.dead = false;
-    session.terminal = null;
-    session.render_epoch = 1;
-    session.terminal_resize_started_ms = 100;
-    session.terminal_resize_last_output_ms = 150;
-    session.terminal_resize_hold_agent = .codex;
-
-    try std.testing.expect(session.outputHoldActive());
-    try std.testing.expect(!session.expireTerminalResizeHold(200));
-    try std.testing.expect(session.outputHoldActive());
-    try std.testing.expect(session.expireTerminalResizeHold(250));
-    try std.testing.expect(!session.outputHoldActive());
-    try std.testing.expectEqual(@as(u64, 2), session.render_epoch);
-}
-
-test "terminal resize hold is inactive without an agent" {
-    var session: SessionState = undefined;
-    session.spawned = true;
-    session.dead = false;
-    session.terminal = null;
-    session.render_epoch = 1;
-    session.synchronized_output_hold_agent = null;
-    session.terminal_resize_started_ms = 100;
-    session.terminal_resize_last_output_ms = 150;
-    session.terminal_resize_hold_agent = null;
-
-    try std.testing.expect(!session.outputHoldActive());
-}
-
-test "terminal resize hold keeps future last-output sample" {
-    var session: SessionState = undefined;
-    session.spawned = true;
-    session.dead = false;
-    session.terminal = null;
-    session.render_epoch = 1;
-    session.terminal_resize_started_ms = 100;
-    session.terminal_resize_last_output_ms = 201;
-    session.terminal_resize_hold_agent = .codex;
-
-    try std.testing.expect(!session.expireTerminalResizeHold(200));
-    try std.testing.expect(session.outputHoldActive());
-    try std.testing.expectEqual(@as(i64, 201), session.terminal_resize_last_output_ms);
-}
-
-test "terminal resize hold caps chatty sessions" {
-    var session: SessionState = undefined;
-    session.spawned = true;
-    session.dead = false;
-    session.terminal = null;
-    session.render_epoch = 1;
-    session.terminal_resize_started_ms = 100;
-    session.terminal_resize_last_output_ms = 100 + terminal_resize_hold_max_ms - 1;
-    session.terminal_resize_hold_agent = .codex;
-
-    try std.testing.expect(session.expireTerminalResizeHold(100 + terminal_resize_hold_max_ms));
-    try std.testing.expect(!session.outputHoldActive());
-}
-
-test "vim-like process detection is exact" {
-    try std.testing.expect(isVimLikeProcessName("nvim"));
-    try std.testing.expect(isVimLikeProcessName("vim"));
-    try std.testing.expect(isVimLikeProcessName("view"));
-    try std.testing.expect(isVimLikeProcessName("nvimdiff"));
-    try std.testing.expect(isVimLikeProcessName("vimdiff"));
-    try std.testing.expect(!isVimLikeProcessName("node"));
-    try std.testing.expect(!isVimLikeProcessName("nvim-helper"));
-}
-
-test "vim redraw nudge skips unsafe editor states" {
-    try std.testing.expectEqual(@as(?VimRedrawNudgeSkipReason, null), vimRedrawNudgeSkipReason(.alternate, .block));
-    try std.testing.expectEqual(@as(?VimRedrawNudgeSkipReason, null), vimRedrawNudgeSkipReason(.alternate, .underline));
-    try std.testing.expectEqual(@as(?VimRedrawNudgeSkipReason, .cursor_style_bar), vimRedrawNudgeSkipReason(.alternate, .bar));
-    try std.testing.expectEqual(@as(?VimRedrawNudgeSkipReason, .screen_not_alternate), vimRedrawNudgeSkipReason(.primary, .block));
 }
 
 test "SessionState assigns incrementing ids" {
