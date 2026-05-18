@@ -330,7 +330,7 @@ fn applyTerminalLayout(
     full_cols.* = sizes.full.cols;
     full_rows.* = sizes.full.rows;
     const full_set = fullSetForMode(anim_state.mode, anim_state.focused_session, anim_state.previous_session);
-    _ = layout.applyTerminalResize(sessions, allocator, sizes, full_set, render_width, render_height, ui_scale);
+    _ = layout.applyTerminalResize(sessions, allocator, sizes, full_set);
 }
 
 fn applyTerminalLayoutIfSizeChanged(
@@ -351,7 +351,7 @@ fn applyTerminalLayoutIfSizeChanged(
     full_cols.* = sizes.full.cols;
     full_rows.* = sizes.full.rows;
     const full_set = fullSetForMode(anim_state.mode, anim_state.focused_session, anim_state.previous_session);
-    return layout.applyTerminalResize(sessions, allocator, sizes, full_set, render_width, render_height, ui_scale);
+    return layout.applyTerminalResize(sessions, allocator, sizes, full_set);
 }
 
 /// Computes both terminal sizes from the raw render dimensions. grid_size
@@ -904,9 +904,6 @@ fn applyRuntimeResizeForScaleChange(ctx: *RuntimeScaleChangeContext) void {
         ctx.allocator,
         sizes,
         full_set,
-        ctx.render_width,
-        ctx.render_height,
-        ctx.ui_scale,
     );
 }
 

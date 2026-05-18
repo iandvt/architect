@@ -17,6 +17,12 @@ const SessionState = session_state.SessionState;
 pub const TerminalSize = struct {
     cols: u16,
     rows: u16,
+    /// Pixel area the cells actually occupy (cols * cell_width, rows * cell_height).
+    /// Mirrored into `ws_xpixel`/`ws_ypixel` and DEC 2048 reports so sessions get the
+    /// pixel dimensions of their own rendered area (matters for grid-tile sessions,
+    /// which draw into a small tile rather than the whole window).
+    width_px: u16,
+    height_px: u16,
 };
 
 pub fn updateRenderSizes(
@@ -106,6 +112,8 @@ pub fn calculateTerminalSize(font: *const font_mod.Font, window_width: c_int, wi
     return .{
         .cols = @intCast(cols),
         .rows = @intCast(rows),
+        .width_px = @intCast(cols * scaled_cell_w),
+        .height_px = @intCast(rows * scaled_cell_h),
     };
 }
 
@@ -171,25 +179,18 @@ pub fn applyTerminalResize(
     allocator: std.mem.Allocator,
     sizes: Sizes,
     full_set: FullSet,
-    render_width: c_int,
-    render_height: c_int,
-    ui_scale: f32,
 ) bool {
-    const padding = dpi.scale(renderer_mod.terminal_padding, ui_scale) * 2;
-    const usable_width: u16 = @intCast(@max(0, render_width - padding));
-    const usable_height: u16 = @intCast(@max(0, render_height - padding));
-
     const grid_size = pty_mod.winsize{
         .ws_row = sizes.grid.rows,
         .ws_col = sizes.grid.cols,
-        .ws_xpixel = usable_width,
-        .ws_ypixel = usable_height,
+        .ws_xpixel = sizes.grid.width_px,
+        .ws_ypixel = sizes.grid.height_px,
     };
     const full_size = pty_mod.winsize{
         .ws_row = sizes.full.rows,
         .ws_col = sizes.full.cols,
-        .ws_xpixel = usable_width,
-        .ws_ypixel = usable_height,
+        .ws_xpixel = sizes.full.width_px,
+        .ws_ypixel = sizes.full.height_px,
     };
 
     var terminal_resized = false;
