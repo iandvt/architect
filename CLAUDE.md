@@ -12,34 +12,16 @@
 ## Build & Run
 
 ```bash
-# Worktree bootstrap (run in a fresh worktree)
-just setup   # pre-caches the ghostty-vt tarball; skip if already cached
-
-# Environment activation
-nix develop  # or: direnv allow
-#
-# Minimal host prerequisites:
-# - Nix with flakes enabled (or direnv + nix-direnv)
-# - macOS (primary platform; Linux support is partial)
-
-# Build
+just setup            # fresh worktree bootstrap
+nix develop           # or: direnv allow
 zig build
-
-# Run
 zig build run
-
-# Test
 zig build test
-
-# Type check
-N/A  # Zig build covers type checking
-
-# Lint
 just lint
-
-# Format check
 zig fmt --check src/
 ```
+
+Prerequisites: macOS, Nix with flakes enabled, or direnv with nix-direnv. Zig build covers type checking.
 
 ## Infrastructure
 
@@ -94,20 +76,24 @@ Read these before making any changes:
 
 - Favor self-documenting code; keep comments minimal and meaningful.
 - Default to ASCII unless the file already uses non-ASCII.
-- **Error handling**: Always handle errors explicitly—propagate, recover, or log. Never use bare `catch {}` or `catch unreachable`. Even for "impossible" failures like action queue appends, log them:
-  ```zig
-  // WRONG: silently swallows the error
-  actions.append(.SomeAction) catch {};
-
-  // CORRECT: log the error for debugging
-  actions.append(.SomeAction) catch |err| {
-      log.warn("failed to queue action: {}", .{err});
-  };
-  ```
+- **Error handling**: Always handle errors explicitly: propagate, recover, or log. Never use bare `catch {}` or `catch unreachable`. Even for "impossible" failures like action queue appends, log the error.
 - Run `zig fmt src/` (or `zig fmt` on touched Zig files) before wrapping up changes.
 - Avoid destructive git commands and do not revert user changes.
 
 ## Git Workflow
+
+### Branch Roles
+- `main` is the stable local branch and the source for stable builds.
+- `scratch` is the agent working branch. Keep exploratory agent changes there until promoted deliberately.
+- `upstream` tracks `forketyfork/architect:main`; decide later whether to merge, rebase, cherry-pick, or ignore upstream changes.
+- Worktrunk user config currently places worktrees under `.claude/worktrees/<branch>`, which is ignored by `.gitignore`.
+
+### Worktrunk Quick Start
+```bash
+wt switch --create scratch
+wt switch scratch
+wt list
+```
 
 When creating a new feature or fix branch:
 1. Always start from an up-to-date `main` branch
@@ -139,39 +125,7 @@ This applies to all SDL3 constants: key codes (SDLK_*), modifier flags (SDL_KMOD
 ## Zig Language Gotchas
 
 ### Type Inference with Builtin Functions
-**Problem:** Zig's builtin functions like `@min`, `@max`, and `@clamp` infer result types from their operands. When both operands include small comptime constants, the result type can be unexpectedly narrow. If subsequent arithmetic also uses comptime constants, the entire expression stays in the narrow type and can overflow.
-
-**Example Bug:**
-```zig
-const GRID_COLS = 3;  // comptime_int (not usize!)
-const GRID_ROWS = 3;
-
-// @min infers u2 from the comptime constant (GRID_COLS - 1 = 2)
-const grid_col = @min(@as(usize, col_index), GRID_COLS - 1);  // u2
-const grid_row = @min(@as(usize, row_index), GRID_ROWS - 1);  // u2
-
-// WRONG: entire expression stays u2 because GRID_COLS is comptime_int
-const result = grid_row * GRID_COLS + grid_col;
-// 1 * 3 + 2 = 5, but u2 max is 3 → panic in debug, wraps to 1 in release!
-```
-
-**Solution:** Use explicit `: usize` annotation to force the result type:
-```zig
-const GRID_COLS = 3;
-const GRID_ROWS = 3;
-
-// Explicit usize annotation prevents narrow type inference
-const grid_col: usize = @min(@as(usize, col_index), @as(usize, GRID_COLS - 1));
-const grid_row: usize = @min(@as(usize, row_index), @as(usize, GRID_ROWS - 1));
-const result = grid_row * GRID_COLS + grid_col;  // usize, works correctly
-```
-
-**When to be careful:**
-- Using `@min`, `@max`, `@clamp` with comptime integer literals or constants
-- Subsequent arithmetic with comptime constants (they peer-resolve with narrow types)
-- Index calculations for grids or arrays
-
-**General rule:** When calculating indices or sizes, add explicit `: usize` type annotations to `@min`/`@max` results.
+Zig's `@min`, `@max`, and `@clamp` can infer unexpectedly narrow result types when operands include small comptime constants. For indices or sizes, add explicit `: usize` annotations to `@min`/`@max` results before doing follow-up arithmetic.
 
 ### Naming collisions in large render functions
 - When hoisting shared locals (e.g., `cursor`) to wider scopes inside long functions, avoid re-declaring them later with the same name. Zig treats this as shadowing and fails compilation. Prefer a single binding per logical value or choose distinct names for nested scopes to prevent "local constant shadows" errors.
