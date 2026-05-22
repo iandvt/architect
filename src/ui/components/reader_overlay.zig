@@ -8,6 +8,7 @@ const dpi = @import("../../dpi.zig");
 const FullscreenOverlay = @import("fullscreen_overlay.zig").FullscreenOverlay;
 const session_state = @import("../../session/state.zig");
 const font_cache_mod = @import("../../font_cache.zig");
+const input = @import("../../input/mapper.zig");
 const terminal_history = @import("../../app/terminal_history.zig");
 const open_url = @import("../../os/open.zig");
 const markdown_parser = @import("markdown_parser.zig");
@@ -645,9 +646,7 @@ pub const ReaderOverlayComponent = struct {
             if (event.type == c.SDL_EVENT_KEY_DOWN) {
                 const key = event.key.key;
                 const mod = event.key.mod;
-                const has_gui = (mod & c.SDL_KMOD_GUI) != 0;
-                const has_blocking = (mod & (c.SDL_KMOD_CTRL | c.SDL_KMOD_ALT)) != 0;
-                if (has_gui and !has_blocking and key == c.SDLK_R) {
+                if (input.readerOverlayShortcut(key, mod)) {
                     actions.append(.ToggleReaderOverlay) catch |err| {
                         log.warn("failed to queue ToggleReaderOverlay action: {}", .{err});
                     };
@@ -668,17 +667,17 @@ pub const ReaderOverlayComponent = struct {
             c.SDL_EVENT_KEY_DOWN => {
                 const key = event.key.key;
                 const mod = event.key.mod;
-                const has_gui = (mod & c.SDL_KMOD_GUI) != 0;
                 const has_shift = (mod & c.SDL_KMOD_SHIFT) != 0;
-                const has_blocking = (mod & (c.SDL_KMOD_CTRL | c.SDL_KMOD_ALT)) != 0;
 
-                if (has_gui and !has_blocking and key == c.SDLK_R) {
+                if (input.readerOverlayShortcut(key, mod)) {
                     actions.append(.ToggleReaderOverlay) catch |err| {
                         log.warn("failed to queue ToggleReaderOverlay action: {}", .{err});
                     };
                     return true;
                 }
 
+                const has_gui = (mod & c.SDL_KMOD_GUI) != 0;
+                const has_blocking = (mod & (c.SDL_KMOD_CTRL | c.SDL_KMOD_ALT)) != 0;
                 if (has_gui and !has_blocking and key == c.SDLK_F) {
                     self.search_active = !self.search_active;
                     if (!self.search_active and self.search_query.items.len == 0) {

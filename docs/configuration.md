@@ -1,11 +1,12 @@
 # Configuration
 
-Architect stores its configuration in `~/.config/architect/` using two TOML files with distinct purposes:
+Architect stores its configuration in `~/.config/architect/` using user preferences plus per-session runtime state:
 
 | File | Purpose | Managed by |
 |------|---------|------------|
 | `config.toml` | User preferences (theme, font, grid size) | User (via `Cmd+,`) |
-| `persistence.toml` | Runtime state (window position, font size, terminal cwds) | Application |
+| `instances/<channel>/<session>/persistence.toml` | Runtime state (window position, font size, terminal cwds) | Application |
+| `instances/<channel>/<session>/instance.toml` | Session display metadata | Application |
 
 ## config.toml
 
@@ -51,7 +52,7 @@ x = -1          # Initial X position (-1 = centered, default: -1)
 y = -1          # Initial Y position (-1 = centered, default: -1)
 ```
 
-Note: Runtime window position and size are saved to `persistence.toml` and take precedence over these values after the first launch.
+Note: Runtime window position and size are saved to the active session's `persistence.toml` and take precedence over these values after the first launch.
 
 ### Theme Configuration
 
@@ -232,7 +233,30 @@ min_level = "info"
 # init_command = "script/setup"
 ```
 
-## persistence.toml
+## Session Persistence
+
+Stable and Scratch app bundles infer their channel from the bundle name. Direct binary launches use `--instance <channel>`. If `--session <name>` is not provided, Architect generates a cute session name from the built-in emoji-backed pool, for example `HappyOtter`, displayed as `Stable / 🦦 Happy Otter`.
+
+Session files live under:
+
+```text
+~/.config/architect/
+  instances/
+    Stable/
+      HappyOtter/
+        persistence.toml
+        instance.toml
+```
+
+Reopen a specific session with:
+
+```bash
+zig build run -- --instance Stable --session HappyOtter
+```
+
+If a saved terminal working directory cannot be reopened, Architect preserves the saved terminal list instead of replacing it with a fallback shell's current directory.
+
+### persistence.toml
 
 Auto-managed runtime state. Do not edit manually unless troubleshooting.
 
@@ -269,25 +293,37 @@ y = 50
 | `font_size` | Current font size (adjusted with `Cmd++`/`Cmd+-`) |
 | `terminals` | Working directories for each terminal (ordered by session index) |
 | `terminal_agent_types` | Agent type for each terminal slot (`"claude"`, `"codex"`, `"gemini"`), or an empty string (`""`) when absent. Present only when at least one terminal had a running agent at quit time. |
-| `terminal_session_ids` | Session UUID for each terminal slot, or an empty string (`""`) when absent. Written alongside `terminal_agent_types` when an agent session ID was captured at quit. On next launch, Architect writes the corresponding resume command (e.g., `claude --resume <uuid>`) to the terminal as soon as the shell is ready. |
+| `terminal_session_ids` | Session UUID for each terminal slot, or an empty string (`""`) when absent. Written alongside `terminal_agent_types` when an agent session ID was captured at quit. On next launch, Architect pre-fills the corresponding resume command (for example, `claude --resume <uuid>`) without pressing Enter. |
 | `[window]` | Last window position and dimensions |
-| `[recent_folders]` | Directory visit counts (up to 10 entries, sorted by frequency for `Cmd+O` overlay) |
+| `[recent_folders]` | Directory visit counts (up to 10 entries, sorted by frequency for the recent folders picker) |
 
-On launch, Architect restores terminals to their saved working directories. The grid automatically resizes to fit the number of restored terminals. If a terminal had an AI agent running when Architect was last closed, the agent is automatically resumed.
+On launch, Architect restores terminals to their saved working directories. The grid automatically resizes to fit the number of restored terminals. Terminal scrollback and terminal history are not restored. If a terminal had an AI agent running when Architect was last closed, the resume command is pre-filled for manual restart.
 
 `persistence.toml` is written atomically (temp file + replace), so updates never leave a partially written file. Architect updates it during runtime when state changes (window move/resize, font size, terminal cwd changes, terminal spawn/despawn) and performs a final save during shutdown.
 
-Note: Terminal cwd persistence and agent session resumption are currently macOS-only.
+Note: Terminal cwd persistence and startup cwd restore are currently macOS-only.
 
-Older `persistence.toml` files that used the `[terminals]` table or `recent_folders` array are migrated automatically. Files without `terminal_agent_types` / `terminal_session_ids` are loaded normally (no agent resumption for those terminals).
+Older `persistence.toml` files that used the root `~/.config/architect/persistence.toml` path, the `[terminals]` table, or `recent_folders` array are migrated automatically. Files without `terminal_agent_types` / `terminal_session_ids` are loaded normally (no agent resumption for those terminals).
+
+### instance.toml
+
+Session metadata is written next to `persistence.toml`:
+
+```toml
+channel = "Stable"
+id = "HappyOtter"
+display_name = "Happy Otter"
+emoji = "🦦"
+created_from_cwd = "/Users/me/projects/app"
+```
 
 ## Resetting Configuration
 
 Delete the configuration files to reset to defaults:
 
 ```bash
-rm ~/.config/architect/config.toml      # Reset preferences
-rm ~/.config/architect/persistence.toml # Reset runtime state
+rm ~/.config/architect/config.toml # Reset preferences
+rm -rf ~/.config/architect/instances # Reset named sessions
 ```
 
 Or remove the entire directory:

@@ -29,56 +29,35 @@ Architect solves this with a grid view that keeps all your agents visible, with 
 
 ### Agent-Focused
 - **Status highlights** — agents glow when awaiting approval or done, so you never miss a prompt
-- **Agent session persistence** — when you quit Architect, any running Claude, Codex, or Gemini agents are gracefully terminated and their session IDs saved; on next launch the agents resume automatically where they left off
+- **Named sessions** — app bundles run as Stable or Scratch channels; each launch gets a named session such as `Stable / 🦦 Happy Otter`; reopen that session by name to restore terminal working directories and pre-fill saved agent resume commands for manual restart
 - **Dynamic grid** — starts with a single terminal in full view; press ⌘N to add a terminal after the current one, and closing terminals compacts the grid forward
 - **Grid view** — keep all agents visible simultaneously, expand any one to full screen
-- **Worktree picker** (⌘T) — quickly `cd` into git worktrees for parallel agent work on separate branches; new worktrees are created outside the repo tree (configurable via `[worktree]` in `config.toml`) with automatic post-create initialization
+- **Worktree picker** (⌘T) — quickly `cd` into git worktrees for parallel agent work on separate branches; new worktrees are created outside the repository tree (configurable via `[worktree]` in `config.toml`) with automatic post-create initialization
 - **Recent folders** (⌘O) — quickly `cd` into recently visited directories with instant search filtering (start typing to narrow the list), substring highlighting, arrow key navigation, and ⌘1–⌘9 quick selection
 - **Diff review comments** — click diff lines in the ⌘D overlay to leave inline comments with multiline wrapping, then send them all to a running agent (or start one) with the "Send to agent" button
-- **Story viewer** — run `architect story <filename>` to open a scrollable overlay that renders PR story files with prose text and diff-colored code blocks
+- **Story viewer** — inside an Architect terminal, run `architect story <filename>` to open a scrollable overlay that renders PR story files with prose text and diff-colored code blocks
 - **MCP session spawning** — run `architect-mcp` from an MCP client to ask the running Architect app to create a terminal session in a requested working directory
 - **Reader mode** (⌘R) — open a centered markdown reader for the selected terminal's history (works in full view and grid) with live updates, bottom pinning, incremental search (⌘F, Enter/Shift+Enter), markdown tables with inline cell styling (bold/italic/code/links/strikethrough), task checkboxes (emoji), clickable links, shared draggable scrollbar, and left-to-right gradient separators before command prompts (OSC 133 + fallback heuristics)
 
 ### Terminal Essentials
 - Smooth animated transitions for grid expansion, contraction, and reflow (cells and borders move/resize together)
 - Wakeable idle input handling keeps typing responsive after short idle periods instead of waiting on a fixed sleep window
-- Keyboard navigation: ⌘+Return to expand, ⌘1–⌘0 to switch grid slots, ⌘Arrow to move focus in grid view (plays a brief wave animation on the destination terminal), ⌘N to add, ⌘W to close a terminal (restarts if it's the only terminal), ⌘T for worktrees, ⌘O for recent folders, ⌘D for repo-wide git diff (staged + unstaged + untracked), ⌘R for reader mode, ⌘/ for shortcuts; quit with ⌘Q or the window close button
-- Git diff overlay title shows the repo root folder being diffed
+- Keyboard navigation: ⌘+Return to expand, ⌘1–⌘0 to switch grid slots, ⌘Arrow to move focus in grid view (plays a brief wave animation on the destination terminal), ⌘N to add, ⌘W to close a terminal (restarts if it's the only terminal), ⌘T for worktrees, ⌘O for recent folders, ⌘D for repository-wide git diff (staged + unstaged + untracked), ⌘R for reader mode, ⌘/ for shortcuts; quit with ⌘Q or the window close button
+- Git diff overlay title shows the repository root folder being diffed
 - Per-cell cwd bar in grid view reserves space, and terminal dimensions track grid/full mode so content wraps inside the visible area
 - Scrollback with trackpad/wheel support and an auto-hiding draggable scrollbar in terminal views
 - OSC 8 hyperlink support (Cmd+Click to open)
 - Replies to OSC 4/10/11 color queries using the live terminal palette/default colors so Codex and similar CLIs do not stall on startup probes
 - Kitty keyboard protocol for enhanced key handling
-- Persistent window state and font size across sessions
+- Persistent window state and font size within each named session
 
 ## Installation
 
 ### Download Pre-built Binary (macOS)
 
-Download the latest release from the [releases page](https://github.com/forketyfork/architect/releases).
+This fork has not published Stable/Scratch release archives yet. Use the source build or HEAD-only Homebrew flow below for the forked app names.
 
-**For Apple Silicon (M1/M2/M3/M4):**
-```bash
-curl -LO https://github.com/forketyfork/architect/releases/latest/download/architect-macos-arm64.tar.gz
-tar -xzf architect-macos-arm64.tar.gz
-xattr -dr com.apple.quarantine Architect.app
-open Architect.app
-```
-
-**For Intel Macs:**
-```bash
-curl -LO https://github.com/forketyfork/architect/releases/latest/download/architect-macos-x86_64.tar.gz
-tar -xzf architect-macos-x86_64.tar.gz
-xattr -dr com.apple.quarantine Architect.app
-open Architect.app
-```
-
-**Note**:
-
-* These GitHub release archives are ad-hoc signed so macOS can launch them locally, but they are not Developer ID signed or notarized.
-* Clear the quarantine attribute before first launch, or macOS may block the app.
-* The archive contains `Architect.app`. You can launch it with `open Architect.app` or run `./Architect.app/Contents/MacOS/architect` from the terminal. The MCP helper is bundled at `./Architect.app/Contents/MacOS/architect-mcp`. Keep the bundle contents intact.
-* Not sure which architecture? Run `uname -m` - if it shows `arm64`, use the ARM64 version; if it shows `x86_64`, use the Intel version.
+Upstream release archives are available from the [forketyfork releases page](https://github.com/forketyfork/architect/releases), but those artifacts track upstream packaging rather than this fork's unreleased Stable/Scratch bundle flow.
 
 ### Homebrew (macOS)
 
@@ -87,25 +66,23 @@ open Architect.app
 xcode-select --install
 ```
 
-Install via Homebrew (builds from source):
+Install this fork's HEAD-only formula from its tap:
 ```bash
-# Tap the repository (note: requires full repo URL since the formula is in the main repo)
-brew tap forketyfork/architect https://github.com/forketyfork/architect
+brew tap iandvt/architect https://github.com/iandvt/architect
+brew install --HEAD iandvt/architect/architect
 
-# Install architect
-brew install architect
-
-# Copy the app to your Applications folder
-cp -r $(brew --prefix)/Cellar/architect/*/Architect.app /Applications/
+# Copy the apps to your Applications folder
+cp -r "$(brew --prefix)/opt/architect/Architect (Stable).app" /Applications/
+cp -r "$(brew --prefix)/opt/architect/Architect (Scratch).app" /Applications/
 
 # MCP clients can use the helper on PATH
 architect-mcp
 ```
 
-Or install directly without tapping:
+From a local checkout, prefer the source app targets because Homebrew expects external formulae to live in a tap:
 ```bash
-brew install https://raw.githubusercontent.com/forketyfork/architect/main/Formula/architect.rb
-cp -r $(brew --prefix)/Cellar/architect/*/Architect.app /Applications/
+make publish-apps            # run from main for Stable, scratch for Scratch
+make stable
 ```
 
 ### Build from Source
@@ -118,14 +95,25 @@ just build
 
 Source builds install both executables under `zig-out/bin/`: `architect` and `architect-mcp`.
 
+For local macOS app bundle launches from this checkout:
+```bash
+make publish-apps            # branch-aware publish: main -> Stable, scratch -> Scratch
+make stable                  # new Stable session from /Applications
+make stable SESSION=HappyOtter
+make scratch                 # new Scratch session from /Applications
+make sessions                # list saved named sessions
+```
+
 ## Hooks
 
-To add hooks for Claude Code, Codex or Gemini, use the `architect` command available in the terminal:
+To add hooks for Claude Code, Codex or Gemini, use the injected `architect` helper available inside Architect terminals:
 ```bash
 architect hook claude
 architect hook codex
 architect hook gemini
 ```
+
+The built `architect` app binary accepts launch flags such as `--instance` and `--session`. It does not provide the `hook`, `notify`, or `story` helper subcommands unless you are inside an Architect-managed terminal where the injected helper is first on `PATH`.
 
 ## MCP
 
@@ -142,32 +130,25 @@ architect hook gemini
 
 `cwd` is required. `command` and `display_name` are optional. On success, the tool returns structured content with `status`, `session_id`, and `slot_index`. If Architect is not running, the grid is full, `cwd` is invalid, or spawning fails, the tool returns an MCP tool error with a stable `code` and `message`.
 
-For release downloads, use:
-```bash
-./Architect.app/Contents/MacOS/architect-mcp
-```
-
-For Homebrew installs, `architect-mcp` is also symlinked onto `PATH`; the app-bundle fallback is:
-```bash
-$(brew --prefix)/Cellar/architect/$(brew list --versions architect | awk '{print $2}')/Architect.app/Contents/MacOS/architect-mcp
-```
+Source builds place the helper at `zig-out/bin/architect-mcp`. Release app bundles omit it by default. For Homebrew installs, `architect-mcp` is installed on `PATH`.
 
 ## Configuration
 
 Architect stores configuration in `~/.config/architect/`:
 
 * `config.toml`: read-only user preferences (edit via `⌘,`).
-* `persistence.toml`: runtime state (window position/size, font size, terminal cwds), managed automatically.
+* `instances/<channel>/<session>/persistence.toml`: runtime state (window position/size, font size, terminal cwds), managed automatically.
+* `instances/<channel>/<session>/instance.toml`: display metadata for named sessions.
 
 Common settings include font family, theme colors, grid font scale, and logging minimum severity (`[logging].min_level`). On macOS, structured app logs are written to `~/Library/Logs/Architect/` with size-based rotation at 10 MiB, including startup/shutdown markers and grid/full view transition events at `INFO`. The grid size is dynamic and adapts to the number of terminals. Remove the files to reset to the default values.
 
 ## Troubleshooting
 
-* **App won't open (Gatekeeper)**: run `xattr -dr com.apple.quarantine Architect.app` after extracting the release.
+* **App won't open (Gatekeeper)**: run `xattr -dr com.apple.quarantine "Architect (Stable).app" "Architect (Scratch).app"` after extracting the release.
 * **Font not found**: ensure the font is installed and set `font.family` in `config.toml`. The app falls back to `SFNSMono` on macOS.
 * **Missing symbol glyphs**: fallbacks try the bundled Symbols Nerd Font, then `Arial Unicode MS`, then `STIXTwoMath` (if available) before emoji.
 * **Emoji alignment**: single-codepoint emoji are centered using glyph metrics; if they appear off, try a different primary font or font size.
-* **Reset configuration**: delete `~/.config/architect/config.toml` and `~/.config/architect/persistence.toml`.
+* **Reset configuration**: delete `~/.config/architect/config.toml` and `~/.config/architect/instances/`.
 * **Crash after closing a terminal**: update to the latest build; older builds could crash after terminal close events on macOS.
 * **Known limitations**: emoji fallback is macOS-only; keybindings are currently fixed.
 

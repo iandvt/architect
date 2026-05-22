@@ -33,6 +33,54 @@ pub fn startCollapseToGrid(
     anim_state.target_rect = target_rect;
 }
 
+pub fn expandGridSession(
+    sessions: []*SessionState,
+    session_interaction: *ui_mod.SessionInteractionComponent,
+    anim_state: *AnimationState,
+    idx: usize,
+    now: i64,
+    animations_enabled: bool,
+    cell_width_pixels: c_int,
+    cell_height_pixels: c_int,
+    render_width: c_int,
+    render_height: c_int,
+    grid_cols: usize,
+    loop: *xev.Loop,
+) !void {
+    if (idx >= sessions.len) return;
+
+    const previous_session = anim_state.focused_session;
+    try sessions[idx].ensureSpawnedWithLoop(loop);
+    session_interaction.clearSelection(previous_session);
+    session_interaction.clearSelection(idx);
+    session_interaction.setStatus(idx, .running);
+    session_interaction.setAttention(idx, false, now);
+
+    const grid_row: c_int = @intCast(idx / grid_cols);
+    const grid_col: c_int = @intCast(idx % grid_cols);
+    const cell_rect = Rect{
+        .x = grid_col * cell_width_pixels,
+        .y = grid_row * cell_height_pixels,
+        .w = cell_width_pixels,
+        .h = cell_height_pixels,
+    };
+    const target_rect = Rect{ .x = 0, .y = 0, .w = render_width, .h = render_height };
+
+    anim_state.focused_session = idx;
+    if (animations_enabled) {
+        anim_state.mode = .Expanding;
+        anim_state.start_time = now;
+        anim_state.start_rect = cell_rect;
+        anim_state.target_rect = target_rect;
+    } else {
+        anim_state.mode = .Full;
+        anim_state.start_time = now;
+        anim_state.start_rect = target_rect;
+        anim_state.target_rect = target_rect;
+        anim_state.previous_session = idx;
+    }
+}
+
 pub fn gridNotificationBufferSize(grid_cols: usize, grid_rows: usize) usize {
     const block_bytes = 3;
     const spaces_between_cols = 3;

@@ -16,7 +16,7 @@ graph TD
     subgraph Application Layer
         RT["app/runtime.zig<br/><i>Frame loop, lifetime, config, session spawning</i>"]
         CTRL["app/control.zig<br/><i>Local control socket, spawn request schema</i>"]
-        APP_MODS["app_state, layout, ui_host,<br/>grid_nav, grid_layout, input_keys,<br/>input_text, terminal_actions, worktree"]
+        APP_MODS["app_state, layout, ui_host,<br/>grid_nav, grid_layout, input_keys,<br/>input_text, runtime_instance,<br/>terminal_actions, worktree"]
     end
 
     subgraph Platform Layer
@@ -109,7 +109,7 @@ These patterns are mandatory for all new code. They are derived from the archite
 
 3. **Blocking I/O goes on a background thread with a thread-safe queue.** The frame loop must never block. Any new external I/O source must follow the notification/control socket pattern: background thread + queue + main-loop drain. (See ADR-009.)
 
-4. **Config vs. persistence separation.** User-editable preferences go in `config.toml`. Auto-managed runtime state (window position, recent folders, terminal cwds) goes in `persistence.toml`. Never mix them. (See ADR-010.)
+4. **Config vs. persistence separation.** User-editable preferences go in `config.toml`. Auto-managed runtime state (window position, recent folders, terminal cwds) goes in per-session `persistence.toml` files under `instances/<channel>/<session>/`. Never mix them. (See ADR-010.)
 
 5. **Use FirstFrameGuard for visibility transitions.** When a UI component moves to a visible state (modal opens, toast appears), call `markTransition()` and return `guard.wantsFrame()` from the component's `wantsFrame` method to bypass idle throttling. (See ADR-012.)
 
@@ -123,7 +123,7 @@ These patterns are mandatory for all new code. They are derived from the archite
 | Add a rendering primitive           | `gfx/`                                    |
 | Add a new config option             | `config.zig` + `config.toml` docs         |
 | Add or change file logging behavior | `logging.zig` + `main.zig` (`std_options.logFn`) + `config.zig` |
-| Add a new persisted runtime value   | `config.zig` (persistence section) + `persistence.toml` docs |
+| Add a new persisted runtime value   | `config.zig` (persistence section) + per-session `persistence.toml` docs |
 | Add cross-layer shared types        | Shared Utilities (`geom.zig`, `colors.zig`, etc.) |
 | Add a new UiAction                  | `ui/types.zig` (tagged union) + handler in `app/runtime.zig` |
 | Add notification-only external tool integration | `session/notify.zig` (extend notification protocol) |
@@ -375,7 +375,8 @@ Rotate: rename active file to architect-<UTC timestamp>.log and continue in new 
 | Glyph cache | GPU textures + in-memory LRU | Up to 4096 shaped glyph textures |
 | Render cache | GPU textures per session | Cached terminal renders, epoch-invalidated |
 | config.toml | `~/.config/architect/config.toml` | User preferences (font, theme, UI flags, worktree location) |
-| persistence.toml | `~/.config/architect/persistence.toml` | Runtime state (window pos, font size, terminal cwds, agent session IDs) |
+| persistence.toml | `~/.config/architect/instances/<channel>/<session>/persistence.toml` | Per-session runtime state (window pos, font size, terminal cwds, agent session IDs) |
+| instance.toml | `~/.config/architect/instances/<channel>/<session>/instance.toml` | Per-session display metadata (channel, ID, display name, emoji, launch cwd) |
 | architect.log + archives | `~/Library/Logs/Architect/` | Structured application logs with size-based rotation (10 MiB active-file threshold) |
 | diff_comments.json | `<repo>/.architect/diff_comments.json` | Per-repo inline diff review comments (unsent) |
 | architect_control_<uid>_<pid>.json | `XDG_RUNTIME_DIR`, or `~/Library/Caches/Architect/runtime` on macOS / `~/.cache/architect/runtime` elsewhere | Per-instance discovery file pointing `architect-mcp` at a running app's local control socket |
@@ -397,6 +398,7 @@ Rotate: rename active file to architect-<UTC timestamp>.log and continue in new 
 | `main.zig` | Thin entrypoint + global logging hook registration | `main()`, `std_options.logFn` | `app/runtime`, `logging` |
 | `mcp/main.zig` | Separate `architect-mcp` stdio MCP server. Handles JSON-RPC lifecycle methods and exposes the single `spawn_session` tool. | `main()`, `run()` | `app/control` module import, std |
 | `app/runtime.zig` | Application lifetime, frame loop, session spawning, config persistence, logging lifecycle/view-transition markers | `run()`, frame loop internals | `platform/sdl`, `session/state`, `render/renderer`, `ui/root`, `config`, `logging`, all `app/*` modules |
+| `app/runtime_instance.zig` | Per-instance runtime glue kept out of the frame loop: run options, window title construction, startup restore entries, manual resume prefill, and terminal persistence synchronization | `RunOptions`, `windowTitleForSession()`, `restoredTerminalEntriesForStartup()`, `seedSessionAgentMetadataFromEntry()`, `prefillManualResumeCommandFromEntry()`, `syncPersistenceTerminalEntriesFromSessions()` | `config`, `session/state`, `app/terminal_history` |
 | `app/control.zig` | Local control channel shared by the app and `architect-mcp`: spawn request schema, discovery file, Unix socket listener, request queue, and response serialization | `SpawnRequest`, `SpawnResponse`, `SpawnQueue`, `startControlThread()`, `connectAndSendSpawnRequest()` | std (socket, thread, JSON) |
 | `app/terminal_history.zig` | Extract focused terminal scrollback + viewport text, strip ANSI escape sequences, convert OSC 133 prompt markers into reader-friendly prompt marker lines, and extract agent session IDs from PTY output for resumption | `extractSessionText()`, `extractTerminalText()`, `stripAnsiAlloc()`, `extractAgentSessionId()`, `buildResumeCommand()` | `session/state`, `ghostty-vt`, std |
 | `app/*` (app_state, layout, ui_host, grid_nav, grid_layout, input_keys, input_text, terminal_actions, worktree) | Application logic decomposed by concern: state enums, grid sizing, UI snapshot building, navigation, input encoding, clipboard, worktree commands (with configurable external directory and post-create init) | `ViewMode`, `AnimationState`, `SessionStatus`, `buildUiHost()`, `applyTerminalResize()`, `encodeKey()`, `paste()`, `clear()`, `resolveWorktreeDir()` | `geom`, `anim/easing`, `ui/types`, `ui/session_view_state`, `colors`, `input/mapper`, `session/state`, `c` |
@@ -509,8 +511,8 @@ Rotate: rename active file to architect-<UTC timestamp>.log and continue in new 
 
 ### ADR-010: TOML-Based Dual Configuration (User Prefs + Runtime State)
 
-- **Decision:** Configuration is split into two TOML files: `config.toml` for user-editable preferences (font, theme, UI flags) and `persistence.toml` for auto-managed runtime state (window position, font size, terminal cwds, recent folders).
-- **Context:** Mixing user preferences with volatile runtime state in a single file leads to merge conflicts and confusion when users manually edit configuration. Separating them allows `config.toml` to be version-controlled or shared, while `persistence.toml` is machine-specific and auto-managed.
+- **Decision:** Configuration is split into `config.toml` for user-editable preferences (font, theme, UI flags) and per-session `instances/<channel>/<session>/persistence.toml` files for auto-managed runtime state (window position, font size, terminal cwds, recent folders).
+- **Context:** Mixing user preferences with volatile runtime state in a single file leads to merge conflicts and confusion when users manually edit configuration. Separating them allows `config.toml` to be version-controlled or shared, while each named session keeps machine-specific runtime state under its channel directory.
 - **Alternatives considered:**
   - *Single config file* -- rejected because auto-saving window position into a user-edited file causes unexpected diffs.
   - *JSON or YAML* -- rejected because TOML is designed for configuration files, has clear section semantics, and the zig-toml library provides native Zig integration without C FFI.
@@ -546,10 +548,10 @@ Rotate: rename active file to architect-<UTC timestamp>.log and continue in new 
 
 ### ADR-014: Agent Session Detection, Persistence, and Resumption
 
-- **Decision:** Architect detects running AI agents at quit time, captures their session UUIDs, persists them in `persistence.toml`, and automatically resumes them on next launch. The quit-time teardown runs asynchronously on a background worker thread while the main thread keeps rendering terminal updates.
+- **Decision:** Architect detects running AI agents at quit time, captures their session UUIDs, persists them in the active named session's `persistence.toml`, and pre-fills the matching resume command on next launch without executing it. The quit-time teardown runs asynchronously on a background worker thread while the main thread keeps rendering terminal updates.
 - **Context:** To persist an agent's session ID for resumption on next launch, Architect must capture the session UUID that the agent prints to the PTY during graceful shutdown. The quit sequence is: detect running agent via macOS `sysctl`/process inspection → start a background teardown worker → worker launches one teardown task per detected agent session in parallel; each task injects `Ctrl+C` twice (all supported agents), waits, retries once, and finally sends SIGTERM as last resort → main thread continues polling PTY output/rendering terminals (including post-exit PTY drain only for sessions with active quit capture while they are still allocated), so users can see agents stopping in real time and trailing output is not dropped → a full-screen `quit_blocking_overlay` blocks all input and renders a shimmering gray veil while teardown is in progress → after worker completion, runtime performs a bounded drain-until-quiet pass over all affected PTYs to capture trailing output that arrived after the worker reported done → Architect extracts UUIDs only from PTY bytes captured after shutdown begins (not full history) and persists successful captures to `persistence.toml`.
 - **Agent detection strategy:** `session/state.detectForegroundAgent()` reads the foreground process-group leader's process image name (`kp_proc.p_comm`) via `sysctl KERN_PROC_PID`. If `p_comm` is `"claude"`, `"codex"`, or `"gemini"`, the agent is identified directly. If `p_comm` is `"node"`, `KERN_PROCARGS2` is read to inspect `argv[1]`; if the script path contains `"claude"`, `"codex"`, or `"gemini"`, the corresponding agent is matched. This uniform approach covers both direct binaries and Node.js-wrapped agents.
-- **Resume-command injection:** On next launch, `app/runtime.zig` reads the persisted `agent_type` and `agent_session_id` from `persistence.toml`. If both are present, it appends the resume command (e.g., `claude --resume <uuid>`) to `session.pending_write` immediately after spawning the shell. The shell reads this input once it is ready, so no timing synchronization is needed.
+- **Resume-command prefill:** On next launch, `app/runtime.zig` reads the persisted `agent_type` and `agent_session_id` from `persistence.toml`. If both are present, it appends the resume command text (for example, `claude --resume <uuid>`) to `session.pending_write` immediately after spawning the shell, without a trailing newline. The shell reads this input once it is ready, leaving the command at the prompt for the user to run manually.
 - **Layer boundary:** `app/runtime.zig` owns quit orchestration (worker lifecycle, PTY exit signaling by fd, persistence timing) and UI blocking state. `session/state.zig` owns agent detection and session metadata access. `app/terminal_history.zig` owns text analysis (UUID extraction). UI components (`ui/components/quit_blocking_overlay.zig`) own the visual/input lock behavior.
 - **Alternatives considered:**
   - *Synchronous main-thread teardown with blocking reads* -- rejected because it freezes UI rendering during agent shutdown and obscures progress from users.
