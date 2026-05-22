@@ -11,6 +11,7 @@ const input_keys = @import("input_keys.zig");
 const input_text = @import("input_text.zig");
 const layout = @import("layout.zig");
 const terminal_actions = @import("terminal_actions.zig");
+const runtime_instance = @import("runtime_instance.zig");
 const ui_host = @import("ui_host.zig");
 const worktree = @import("worktree.zig");
 const control = @import("control.zig");
@@ -37,6 +38,8 @@ const terminal_history = @import("terminal_history.zig");
 
 const log = std.log.scoped(.runtime);
 extern "c" fn tcgetpgrp(fd: posix.fd_t) posix.pid_t;
+
+pub const RunOptions = runtime_instance.RunOptions;
 
 const initial_window_width = 1200;
 const initial_window_height = 900;
@@ -175,102 +178,6 @@ fn emitViewModeTransitionEvents(
     if (next_mode == .Full and previous_mode != .Full) {
         writeRuntimeEvent("entered full view", "view_enter_full", extra_data);
     }
-}
-
-fn optionalStringEql(lhs: ?[]const u8, rhs: ?[]const u8) bool {
-    if (lhs == null and rhs == null) return true;
-    if (lhs == null or rhs == null) return false;
-    return std.mem.eql(u8, lhs.?, rhs.?);
-}
-
-fn persistedAgentType(session: *const SessionState) ?[]const u8 {
-    if (!session.agent_metadata_captured) return null;
-    if (session.agent_kind == null or session.agent_session_id == null) return null;
-    return session.agent_kind.?.name();
-}
-
-fn persistedAgentSessionId(session: *const SessionState, agent_type: ?[]const u8) ?[]const u8 {
-    if (agent_type == null) return null;
-    return session.agent_session_id;
-}
-
-fn seedSessionAgentMetadataFromEntry(
-    session: *SessionState,
-    entry: config_mod.Persistence.TerminalEntry,
-    allocator: std.mem.Allocator,
-) void {
-    const agent_type_str = entry.agent_type orelse return;
-    const session_id = entry.agent_session_id orelse return;
-    if (session_id.len == 0) return;
-    const agent_kind = session_state.AgentKind.fromString(agent_type_str) orelse return;
-
-    session.agent_kind = agent_kind;
-    if (session.agent_session_id) |sid| {
-        allocator.free(sid);
-        session.agent_session_id = null;
-    }
-    session.agent_session_id = allocator.dupe(u8, session_id) catch |err| {
-        log.warn("failed to seed agent session id for restored session {d}: {}", .{ session.slot_index, err });
-        return;
-    };
-    session.agent_metadata_captured = false;
-}
-
-fn terminalEntriesMatchSessions(
-    persistence: *const config_mod.Persistence,
-    sessions: []const *SessionState,
-) bool {
-    var entry_idx: usize = 0;
-    for (sessions) |session| {
-        if (!session.spawned or session.dead) continue;
-        const path = session.cwd_path orelse continue;
-        if (path.len == 0) continue;
-
-        if (entry_idx >= persistence.terminal_entries.items.len) return false;
-        const entry = persistence.terminal_entries.items[entry_idx];
-        const agent_type = persistedAgentType(session);
-        const agent_session_id = persistedAgentSessionId(session, agent_type);
-
-        if (!std.mem.eql(u8, entry.path, path)) return false;
-        if (!optionalStringEql(entry.agent_type, agent_type)) return false;
-        if (!optionalStringEql(entry.agent_session_id, agent_session_id)) return false;
-
-        entry_idx += 1;
-    }
-    return entry_idx == persistence.terminal_entries.items.len;
-}
-
-fn syncPersistenceTerminalEntriesFromSessions(
-    persistence: *config_mod.Persistence,
-    sessions: []const *SessionState,
-    allocator: std.mem.Allocator,
-) !bool {
-    if (terminalEntriesMatchSessions(persistence, sessions)) return false;
-
-    persistence.clearTerminalEntries(allocator);
-    for (sessions) |session| {
-        if (!session.spawned or session.dead) continue;
-        const path = session.cwd_path orelse continue;
-        if (path.len == 0) continue;
-
-        const agent_type = persistedAgentType(session);
-        const agent_session_id = persistedAgentSessionId(session, agent_type);
-        try persistence.appendTerminalEntry(allocator, path, agent_type, agent_session_id);
-    }
-    return true;
-}
-
-fn savePersistenceIfDirty(
-    persistence: *config_mod.Persistence,
-    allocator: std.mem.Allocator,
-    dirty: *bool,
-) void {
-    if (!dirty.*) return;
-    persistence.save(allocator) catch |err| {
-        std.debug.print("Failed to save persistence: {}\n", .{err});
-        return;
-    };
-    dirty.* = false;
 }
 
 fn highestSpawnedIndex(sessions: []const *SessionState) ?usize {
@@ -1124,7 +1031,7 @@ fn startQuitFlow(
     return false;
 }
 
-pub fn run() !void {
+pub fn run(options: RunOptions) !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
@@ -1189,7 +1096,7 @@ pub fn run() !void {
         logging_mod.deinit();
     }
 
-    var persistence = config_mod.Persistence.load(allocator) catch |err| blk: {
+    var persistence = config_mod.Persistence.loadForSession(allocator, options.channel_name, options.session_id) catch |err| blk: {
         std.debug.print("Failed to load persistence: {}, using defaults\n", .{err});
         var fallback = config_mod.Persistence.init(allocator);
         fallback.font_size = config.font.size;
@@ -1208,14 +1115,29 @@ pub fn run() !void {
         }
     }
 
+    const created_from_cwd = std.fs.cwd().realpathAlloc(allocator, ".") catch |err| blk: {
+        log.warn("failed to resolve launch cwd for instance metadata: {}", .{err});
+        break :blk null;
+    };
+    defer if (created_from_cwd) |cwd| allocator.free(cwd);
+    (config_mod.InstanceMetadata{
+        .channel = options.channel_name,
+        .id = options.session_id,
+        .display_name = options.session_display_name,
+        .emoji = options.session_emoji,
+        .created_from_cwd = created_from_cwd,
+    }).saveForSession(allocator) catch |err| {
+        log.warn("failed to save instance metadata: {}", .{err});
+    };
+
     const theme = colors_mod.Theme.fromConfig(config.theme);
 
     // Dynamic grid layout - starts with 1x1 and grows as terminals are added
     var grid = try GridLayout.init(allocator);
     defer grid.deinit();
 
-    // Load persisted terminals to determine initial grid size
-    const restored_entries = if (builtin.os.tag == .macos) persistence.terminal_entries.items else &[_]config_mod.Persistence.TerminalEntry{};
+    // Restore saved cwd slots for the named session. Scrollback is not restored.
+    const restored_entries = runtime_instance.restoredTerminalEntriesForStartup(&persistence);
     const restored_limit = @min(restored_entries.len, grid_layout.max_terminals);
     const restored_slice = restored_entries[0..restored_limit];
 
@@ -1232,8 +1154,16 @@ pub fn run() !void {
     else
         null;
 
+    const window_title = try runtime_instance.windowTitleForSession(
+        allocator,
+        options.channel_name,
+        options.session_emoji,
+        options.session_display_name,
+    );
+    defer allocator.free(window_title);
+
     var sdl = try platform.init(
-        "ARCHITECT",
+        window_title.ptr,
         persistence.window.width,
         persistence.window.height,
         window_pos,
@@ -1394,9 +1324,15 @@ pub fn run() !void {
         init_count += 1;
     }
 
+    var restored_all_terminal_entries = restored_entries.len == restored_slice.len;
+
     // Restore persisted terminals
     for (restored_slice, 0..) |entry, new_idx| {
-        if (new_idx >= sessions.len or entry.path.len == 0) continue;
+        var restored_this_entry = false;
+        if (new_idx >= sessions.len or entry.path.len == 0) {
+            restored_all_terminal_entries = false;
+            continue;
+        }
         const dir_buf = allocZ(allocator, entry.path) catch |err| blk: {
             std.debug.print("Failed to restore terminal {d}: {}\n", .{ new_idx, err });
             break :blk null;
@@ -1408,30 +1344,22 @@ pub fn run() !void {
                 std.debug.print("Failed to spawn restored terminal {d}: {}\n", .{ new_idx, err });
             };
             if (sessions[new_idx].spawned) {
-                seedSessionAgentMetadataFromEntry(sessions[new_idx], entry, allocator);
+                runtime_instance.seedSessionAgentMetadataFromEntry(sessions[new_idx], entry, allocator);
+                _ = runtime_instance.prefillManualResumeCommandFromEntry(allocator, sessions[new_idx], entry);
+                restored_this_entry = true;
             }
-
-            queueResumeCommand: {
-                if (!sessions[new_idx].spawned) break :queueResumeCommand;
-                const agent_type_str = entry.agent_type orelse break :queueResumeCommand;
-                const session_id = entry.agent_session_id orelse break :queueResumeCommand;
-                if (session_id.len == 0) break :queueResumeCommand;
-                const agent_kind = session_state.AgentKind.fromString(agent_type_str) orelse break :queueResumeCommand;
-                const resume_cmd = terminal_history.buildResumeCommand(allocator, agent_kind, session_id) catch |err| {
-                    log.warn("failed to build resume command for session {d}: {}", .{ new_idx, err });
-                    break :queueResumeCommand;
-                };
-                defer allocator.free(resume_cmd);
-                // Write to pending_write; PTY input queues until the shell reads it after startup.
-                sessions[new_idx].pending_write.appendSlice(allocator, resume_cmd) catch |err| {
-                    log.warn("failed to queue resume command for session {d}: {}", .{ new_idx, err });
-                };
-            }
+        }
+        if (!restored_this_entry) {
+            restored_all_terminal_entries = false;
         }
     }
 
     // Always spawn at least the first terminal
     try sessions[0].ensureSpawnedWithLoop(&loop);
+    const terminal_entry_sync_policy: runtime_instance.TerminalEntrySyncPolicy = if (restored_slice.len > 0 and !restored_all_terminal_entries) blk: {
+        log.warn("one or more persisted terminal slots failed to restore; preserving saved terminal entries for session {s}/{s}", .{ options.channel_name, options.session_id });
+        break :blk .preserve_existing;
+    } else .normal;
 
     init_count = sessions.len;
 
@@ -1638,7 +1566,7 @@ pub fn run() !void {
                     persistence.window.x = window_x;
                     persistence.window.y = window_y;
                     persistence_dirty = true;
-                    savePersistenceIfDirty(&persistence, allocator, &persistence_dirty);
+                    runtime_instance.savePersistenceIfDirty(&persistence, allocator, &persistence_dirty, options);
                 },
                 c.SDL_EVENT_WINDOW_RESIZED => {
                     layout.updateRenderSizes(sdl.window, &window_width_points, &window_height_points, &render_width, &render_height, &scale_x, &scale_y);
@@ -1684,7 +1612,7 @@ pub fn run() !void {
                     persistence.window.x = window_x;
                     persistence.window.y = window_y;
                     persistence_dirty = true;
-                    savePersistenceIfDirty(&persistence, allocator, &persistence_dirty);
+                    runtime_instance.savePersistenceIfDirty(&persistence, allocator, &persistence_dirty, options);
                 },
                 c.SDL_EVENT_WINDOW_FOCUS_LOST => {
                     if (builtin.os.tag == .macos) {
@@ -1780,10 +1708,6 @@ pub fn run() !void {
 
                     const has_gui = (mod & c.SDL_KMOD_GUI) != 0;
                     const has_blocking_mod = (mod & (c.SDL_KMOD_CTRL | c.SDL_KMOD_ALT)) != 0;
-                    const terminal_shortcut: ?usize = if (worktree_comp_ptr.overlay.state == .Closed)
-                        input.terminalSwitchShortcut(key, mod, grid.cols * grid.rows)
-                    else
-                        null;
 
                     if (has_gui and !has_blocking_mod and key == c.SDLK_Q) {
                         if (quit_teardown.active) continue;
@@ -1995,11 +1919,45 @@ pub fn run() !void {
                         continue;
                     }
 
-                    if (key == c.SDLK_K and has_gui and !has_blocking_mod) {
-                        if (config.ui.show_hotkey_feedback) ui.showHotkey("⌘K", now);
-                        terminal_actions.clearTerminal(focused);
-                        ui.showToast("Cleared terminal", now);
-                    } else if (key == c.SDLK_C and has_gui and !has_blocking_mod) {
+                    if (input.gridViewShortcut(key, mod)) {
+                        if (config.ui.show_hotkey_feedback) ui.showHotkey("⌘G", now);
+                        if (anim_state.mode == .Full and countSpawnedSessions(sessions) > 1) {
+                            if (animations_enabled) {
+                                grid_nav.startCollapseToGrid(&anim_state, now, cell_width_pixels, cell_height_pixels, render_width, render_height, grid.cols);
+                            } else {
+                                const grid_row: c_int = @intCast(anim_state.focused_session / grid.cols);
+                                const grid_col: c_int = @intCast(anim_state.focused_session % grid.cols);
+                                anim_state.mode = .Grid;
+                                anim_state.start_time = now;
+                                anim_state.start_rect = Rect{ .x = 0, .y = 0, .w = render_width, .h = render_height };
+                                anim_state.target_rect = Rect{
+                                    .x = grid_col * cell_width_pixels,
+                                    .y = grid_row * cell_height_pixels,
+                                    .w = cell_width_pixels,
+                                    .h = cell_height_pixels,
+                                };
+                            }
+                        } else if (anim_state.mode == .Grid) {
+                            try grid_nav.expandGridSession(
+                                sessions,
+                                session_interaction_component,
+                                &anim_state,
+                                anim_state.focused_session,
+                                now,
+                                animations_enabled,
+                                cell_width_pixels,
+                                cell_height_pixels,
+                                render_width,
+                                render_height,
+                                grid.cols,
+                                &loop,
+                            );
+                            std.debug.print("Expanding session via grid toggle: {d}\n", .{anim_state.focused_session});
+                        }
+                        continue;
+                    }
+
+                    if (key == c.SDLK_C and has_gui and !has_blocking_mod) {
                         if (config.ui.show_hotkey_feedback) ui.showHotkey("⌘C", now);
                         terminal_actions.copySelectionToClipboard(focused, allocator, &ui, now) catch |err| {
                             std.debug.print("Copy failed: {}\n", .{err});
@@ -2026,7 +1984,7 @@ pub fn run() !void {
 
                             persistence.font_size = font_size;
                             persistence_dirty = true;
-                            savePersistenceIfDirty(&persistence, allocator, &persistence_dirty);
+                            runtime_instance.savePersistenceIfDirty(&persistence, allocator, &persistence_dirty, options);
                         }
 
                         var notification_buf: [64]u8 = undefined;
@@ -2127,129 +2085,64 @@ pub fn run() !void {
                                 ui.showToast("All terminals in use", now);
                             }
                         }
-                    } else if (terminal_shortcut) |idx| {
-                        const hotkey_label = input.terminalHotkeyLabel(idx) orelse "⌘?";
-                        if (config.ui.show_hotkey_feedback) ui.showHotkey(hotkey_label, now);
-
-                        if (anim_state.mode == .Grid) {
-                            try sessions[idx].ensureSpawnedWithLoop(&loop);
-                            session_interaction_component.setStatus(idx, .running);
-                            session_interaction_component.setAttention(idx, false, now);
-
-                            const grid_row: c_int = @intCast(idx / grid.cols);
-                            const grid_col: c_int = @intCast(idx % grid.cols);
-                            const start_rect = Rect{
-                                .x = grid_col * cell_width_pixels,
-                                .y = grid_row * cell_height_pixels,
-                                .w = cell_width_pixels,
-                                .h = cell_height_pixels,
+                    } else if (input.commandGridNavShortcut(key, mod, anim_state.mode)) |direction| {
+                        if (config.ui.show_hotkey_feedback) {
+                            const arrow = switch (direction) {
+                                .up => "⌘↑",
+                                .down => "⌘↓",
+                                .left => "⌘←",
+                                .right => "⌘→",
                             };
-                            const target_rect = Rect{ .x = 0, .y = 0, .w = render_width, .h = render_height };
-
-                            anim_state.focused_session = idx;
-                            if (animations_enabled) {
-                                anim_state.mode = .Expanding;
-                                anim_state.start_time = now;
-                                anim_state.start_rect = start_rect;
-                                anim_state.target_rect = target_rect;
-                            } else {
-                                anim_state.mode = .Full;
-                                anim_state.start_time = now;
-                                anim_state.start_rect = target_rect;
-                                anim_state.target_rect = target_rect;
-                                anim_state.previous_session = idx;
-                            }
-                            std.debug.print("Expanding session via hotkey: {d}\n", .{idx});
-                        } else if (anim_state.mode == .Full and idx != anim_state.focused_session) {
-                            try sessions[idx].ensureSpawnedWithLoop(&loop);
-                            session_interaction_component.clearSelection(anim_state.focused_session);
-                            session_interaction_component.clearSelection(idx);
-                            session_interaction_component.setStatus(idx, .running);
-                            session_interaction_component.setAttention(idx, false, now);
-                            anim_state.focused_session = idx;
-
-                            const buf_size = grid_nav.gridNotificationBufferSize(grid.cols, grid.rows);
-                            const notification_buf = try allocator.alloc(u8, buf_size);
-                            defer allocator.free(notification_buf);
-                            const notification_msg = try grid_nav.formatGridNotification(notification_buf, idx, grid.cols, grid.rows);
-                            ui.showToast(notification_msg, now);
-                            std.debug.print("Switched to session via hotkey: {d}\n", .{idx});
+                            ui.showHotkey(arrow, now);
                         }
-                    } else if (input.gridNavShortcut(key, mod)) |direction| {
+                        try grid_nav.navigateGrid(&anim_state, sessions, session_interaction_component, direction, now, true, animations_enabled, grid.cols, grid.rows, &loop);
+
+                        const buf_size = grid_nav.gridNotificationBufferSize(grid.cols, grid.rows);
+                        const notification_buf = try allocator.alloc(u8, buf_size);
+                        defer allocator.free(notification_buf);
+                        const notification_msg = try grid_nav.formatGridNotification(notification_buf, anim_state.focused_session, grid.cols, grid.rows);
+                        ui.showToast(notification_msg, now);
+
+                        std.debug.print("Full mode grid nav to session {d}\n", .{anim_state.focused_session});
+                    } else if (input.plainGridNavShortcut(key, mod)) |direction| {
                         if (anim_state.mode == .Grid) {
                             if (config.ui.show_hotkey_feedback) {
                                 const arrow = switch (direction) {
-                                    .up => "⌘↑",
-                                    .down => "⌘↓",
-                                    .left => "⌘←",
-                                    .right => "⌘→",
+                                    .up => "↑",
+                                    .down => "↓",
+                                    .left => "←",
+                                    .right => "→",
                                 };
                                 ui.showHotkey(arrow, now);
                             }
                             try grid_nav.navigateGrid(&anim_state, sessions, session_interaction_component, direction, now, true, false, grid.cols, grid.rows, &loop);
                             const new_session = anim_state.focused_session;
                             session_interaction_component.triggerNavWave(new_session, now);
-                            std.debug.print("Grid nav to session {d} (with wrapping)\n", .{new_session});
-                        } else if (anim_state.mode == .Full) {
-                            if (config.ui.show_hotkey_feedback) {
-                                const arrow = switch (direction) {
-                                    .up => "⌘↑",
-                                    .down => "⌘↓",
-                                    .left => "⌘←",
-                                    .right => "⌘→",
-                                };
-                                ui.showHotkey(arrow, now);
-                            }
-                            try grid_nav.navigateGrid(&anim_state, sessions, session_interaction_component, direction, now, true, animations_enabled, grid.cols, grid.rows, &loop);
-
-                            const buf_size = grid_nav.gridNotificationBufferSize(grid.cols, grid.rows);
-                            const notification_buf = try allocator.alloc(u8, buf_size);
-                            defer allocator.free(notification_buf);
-                            const notification_msg = try grid_nav.formatGridNotification(notification_buf, anim_state.focused_session, grid.cols, grid.rows);
-                            ui.showToast(notification_msg, now);
-
-                            std.debug.print("Full mode grid nav to session {d}\n", .{anim_state.focused_session});
-                        } else {
-                            if (focused.spawned and !focused.dead) {
-                                session_interaction_component.resetScrollIfNeeded(anim_state.focused_session);
-                                try input_keys.handleKeyInput(focused, key, mod);
-                            }
+                            std.debug.print("Grid nav to session {d} (plain arrow)\n", .{new_session});
+                        } else if (focused.spawned and !focused.dead) {
+                            session_interaction_component.resetScrollIfNeeded(anim_state.focused_session);
+                            try input_keys.handleKeyInput(focused, key, mod);
                         }
-                    } else if (key == c.SDLK_RETURN and (mod & c.SDL_KMOD_GUI) != 0 and anim_state.mode == .Grid) {
-                        if (config.ui.show_hotkey_feedback) ui.showHotkey("⌘↵", now);
-                        if (countSpawnedSessions(sessions) == 1) {
-                            continue;
+                    } else if (input.gridExpandShortcut(key, mod, anim_state.mode)) {
+                        if (config.ui.show_hotkey_feedback) {
+                            ui.showHotkey("↵", now);
                         }
-                        const clicked_session = anim_state.focused_session;
-                        try sessions[clicked_session].ensureSpawnedWithLoop(&loop);
-
-                        session_interaction_component.setStatus(clicked_session, .running);
-                        session_interaction_component.setAttention(clicked_session, false, now);
-
-                        const grid_row: c_int = @intCast(clicked_session / grid.cols);
-                        const grid_col: c_int = @intCast(clicked_session % grid.cols);
-                        const start_rect = Rect{
-                            .x = grid_col * cell_width_pixels,
-                            .y = grid_row * cell_height_pixels,
-                            .w = cell_width_pixels,
-                            .h = cell_height_pixels,
-                        };
-                        const target_rect = Rect{ .x = 0, .y = 0, .w = render_width, .h = render_height };
-
-                        anim_state.focused_session = clicked_session;
-                        if (animations_enabled) {
-                            anim_state.mode = .Expanding;
-                            anim_state.start_time = now;
-                            anim_state.start_rect = start_rect;
-                            anim_state.target_rect = target_rect;
-                        } else {
-                            anim_state.mode = .Full;
-                            anim_state.start_time = now;
-                            anim_state.start_rect = target_rect;
-                            anim_state.target_rect = target_rect;
-                            anim_state.previous_session = clicked_session;
-                        }
-                        std.debug.print("Expanding session: {d}\n", .{clicked_session});
+                        const selected_session = anim_state.focused_session;
+                        try grid_nav.expandGridSession(
+                            sessions,
+                            session_interaction_component,
+                            &anim_state,
+                            selected_session,
+                            now,
+                            animations_enabled,
+                            cell_width_pixels,
+                            cell_height_pixels,
+                            render_width,
+                            render_height,
+                            grid.cols,
+                            &loop,
+                        );
+                        std.debug.print("Expanding session: {d}\n", .{selected_session});
                     } else if (focused.spawned and !focused.dead and !input_keys.isModifierKey(key)) {
                         session_interaction_component.resetScrollIfNeeded(anim_state.focused_session);
                         if (anim_state.mode == .Grid) {
@@ -2317,14 +2210,14 @@ pub fn run() !void {
             }
         }
 
-        const terminal_entries_changed = syncPersistenceTerminalEntriesFromSessions(&persistence, sessions, allocator) catch |err| blk: {
+        const terminal_entries_changed = runtime_instance.syncPersistenceTerminalEntriesFromSessionsWithPolicy(&persistence, sessions, allocator, terminal_entry_sync_policy) catch |err| blk: {
             log.warn("failed to sync terminal persistence state: {}", .{err});
             break :blk false;
         };
         if (terminal_entries_changed) {
             persistence_dirty = true;
         }
-        savePersistenceIfDirty(&persistence, allocator, &persistence_dirty);
+        runtime_instance.savePersistenceIfDirty(&persistence, allocator, &persistence_dirty, options);
 
         if (quit_teardown.isFinished()) {
             running = false;
@@ -2430,34 +2323,20 @@ pub fn run() !void {
                 if (anim_state.mode != .Grid) continue;
                 if (idx >= sessions.len) continue;
 
-                session_interaction_component.clearSelection(anim_state.focused_session);
-                try sessions[idx].ensureSpawnedWithLoop(&loop);
-                session_interaction_component.setStatus(idx, .running);
-                session_interaction_component.setAttention(idx, false, now);
-
-                const grid_row: c_int = @intCast(idx / grid.cols);
-                const grid_col: c_int = @intCast(idx % grid.cols);
-                const cell_rect = Rect{
-                    .x = grid_col * cell_width_pixels,
-                    .y = grid_row * cell_height_pixels,
-                    .w = cell_width_pixels,
-                    .h = cell_height_pixels,
-                };
-                const target_rect = Rect{ .x = 0, .y = 0, .w = render_width, .h = render_height };
-
-                anim_state.focused_session = idx;
-                if (animations_enabled) {
-                    anim_state.mode = .Expanding;
-                    anim_state.start_time = now;
-                    anim_state.start_rect = cell_rect;
-                    anim_state.target_rect = target_rect;
-                } else {
-                    anim_state.mode = .Full;
-                    anim_state.start_time = now;
-                    anim_state.start_rect = target_rect;
-                    anim_state.target_rect = target_rect;
-                    anim_state.previous_session = idx;
-                }
+                try grid_nav.expandGridSession(
+                    sessions,
+                    session_interaction_component,
+                    &anim_state,
+                    idx,
+                    now,
+                    animations_enabled,
+                    cell_width_pixels,
+                    cell_height_pixels,
+                    render_width,
+                    render_height,
+                    grid.cols,
+                    &loop,
+                );
                 std.debug.print("Expanding session: {d}\n", .{idx});
             },
             .DespawnSession => |idx| {
@@ -2834,7 +2713,7 @@ pub fn run() !void {
                 switch (diff_overlay_component.toggle(focused_cwd, now)) {
                     .not_a_repo => ui.showToast("Not a git repository", now),
                     .clean => ui.showToast("Working tree clean", now),
-                    .opened => if (config.ui.show_hotkey_feedback) ui.showHotkey("⌘D", now),
+                    .opened => if (config.ui.show_hotkey_feedback) ui.showHotkey("Diff", now),
                 }
             },
             .ToggleReaderOverlay => {
@@ -3075,12 +2954,12 @@ pub fn run() !void {
             }
         }
 
-        _ = syncPersistenceTerminalEntriesFromSessions(&persistence, sessions, allocator) catch |err| {
+        _ = runtime_instance.syncPersistenceTerminalEntriesFromSessionsWithPolicy(&persistence, sessions, allocator, terminal_entry_sync_policy) catch |err| {
             std.debug.print("Failed to refresh terminal persistence: {}\n", .{err});
         };
     }
 
-    persistence.save(allocator) catch |err| {
+    persistence.saveForSession(allocator, options.channel_name, options.session_id) catch |err| {
         std.debug.print("Failed to save persistence: {}\n", .{err});
     };
     persistence.deinit(allocator);
@@ -3102,8 +2981,8 @@ test "planExternalSpawnSlot expands a full current grid" {
 
     const plan = planExternalSpawnSlot(&sessions, 1, 1, 0) orelse return error.TestUnexpectedResult;
     try std.testing.expect(plan.expands_grid);
-    try std.testing.expectEqual(@as(usize, 2), plan.cols);
-    try std.testing.expectEqual(@as(usize, 1), plan.rows);
+    try std.testing.expectEqual(@as(usize, 1), plan.cols);
+    try std.testing.expectEqual(@as(usize, 2), plan.rows);
     try std.testing.expectEqual(@as(usize, 1), plan.slot_index);
 }
 
@@ -3114,10 +2993,10 @@ test "planExternalSpawnSlot reuses free capacity" {
     second.spawned = false;
     var sessions = [_]*SessionState{ &first, &second };
 
-    const plan = planExternalSpawnSlot(&sessions, 2, 1, 0) orelse return error.TestUnexpectedResult;
+    const plan = planExternalSpawnSlot(&sessions, 1, 2, 0) orelse return error.TestUnexpectedResult;
     try std.testing.expect(!plan.expands_grid);
-    try std.testing.expectEqual(@as(usize, 2), plan.cols);
-    try std.testing.expectEqual(@as(usize, 1), plan.rows);
+    try std.testing.expectEqual(@as(usize, 1), plan.cols);
+    try std.testing.expectEqual(@as(usize, 2), plan.rows);
     try std.testing.expectEqual(@as(usize, 1), plan.slot_index);
 }
 
@@ -3407,107 +3286,4 @@ test "applyScaleChangeAndResize skips resize when reload fails" {
 
     try std.testing.expectEqual(@as(usize, 1), ctx.reload_calls);
     try std.testing.expectEqual(@as(usize, 0), ctx.resize_calls);
-}
-
-test "seedSessionAgentMetadataFromEntry seeds known restored metadata" {
-    const allocator = std.testing.allocator;
-
-    var session: SessionState = undefined;
-    session.slot_index = 3;
-    session.agent_kind = null;
-    session.agent_session_id = null;
-    session.agent_metadata_captured = true;
-
-    const entry = config_mod.Persistence.TerminalEntry{
-        .path = "/tmp/test",
-        .agent_type = "codex",
-        .agent_session_id = "abc-123",
-    };
-    seedSessionAgentMetadataFromEntry(&session, entry, allocator);
-
-    try std.testing.expect(session.agent_kind != null);
-    try std.testing.expectEqual(session_state.AgentKind.codex, session.agent_kind.?);
-    try std.testing.expect(session.agent_session_id != null);
-    try std.testing.expectEqualStrings("abc-123", session.agent_session_id.?);
-    try std.testing.expect(session.agent_session_id.?.ptr != entry.agent_session_id.?.ptr);
-    try std.testing.expect(!session.agent_metadata_captured);
-
-    if (session.agent_session_id) |sid| allocator.free(sid);
-}
-
-test "syncPersistenceTerminalEntriesFromSessions ignores restored agent metadata until quit capture" {
-    const allocator = std.testing.allocator;
-
-    var persistence = config_mod.Persistence.init(allocator);
-    defer persistence.deinit(allocator);
-
-    try persistence.appendTerminalEntry(allocator, "/one", "codex", "stale-seed");
-
-    var session: SessionState = undefined;
-    session.slot_index = 0;
-    session.spawned = true;
-    session.dead = false;
-    session.cwd_path = "/one";
-    session.agent_kind = null;
-    session.agent_session_id = null;
-    session.agent_metadata_captured = false;
-
-    seedSessionAgentMetadataFromEntry(&session, persistence.terminal_entries.items[0], allocator);
-    defer if (session.agent_session_id) |sid| allocator.free(sid);
-
-    var sessions = [_]*SessionState{&session};
-
-    try std.testing.expect(try syncPersistenceTerminalEntriesFromSessions(&persistence, &sessions, allocator));
-    try std.testing.expectEqual(@as(usize, 1), persistence.terminal_entries.items.len);
-    try std.testing.expect(persistence.terminal_entries.items[0].agent_type == null);
-    try std.testing.expect(persistence.terminal_entries.items[0].agent_session_id == null);
-}
-
-test "syncPersistenceTerminalEntriesFromSessions reacts to cd, spawn, and despawn" {
-    const allocator = std.testing.allocator;
-
-    var persistence = config_mod.Persistence.init(allocator);
-    defer persistence.deinit(allocator);
-
-    var sessions_storage: [2]SessionState = undefined;
-    for (&sessions_storage) |*session| {
-        session.* = undefined;
-        session.spawned = false;
-        session.dead = false;
-        session.cwd_path = null;
-        session.agent_kind = null;
-        session.agent_session_id = null;
-        session.agent_metadata_captured = false;
-    }
-    var sessions = [_]*SessionState{ &sessions_storage[0], &sessions_storage[1] };
-
-    sessions_storage[0].spawned = true;
-    sessions_storage[0].cwd_path = "/one";
-
-    try std.testing.expect(try syncPersistenceTerminalEntriesFromSessions(&persistence, &sessions, allocator));
-    try std.testing.expectEqual(@as(usize, 1), persistence.terminal_entries.items.len);
-    try std.testing.expectEqualStrings("/one", persistence.terminal_entries.items[0].path);
-
-    sessions_storage[0].cwd_path = "/two";
-    try std.testing.expect(try syncPersistenceTerminalEntriesFromSessions(&persistence, &sessions, allocator));
-    try std.testing.expectEqualStrings("/two", persistence.terminal_entries.items[0].path);
-    try std.testing.expect(!(try syncPersistenceTerminalEntriesFromSessions(&persistence, &sessions, allocator)));
-
-    sessions_storage[0].spawned = false;
-    try std.testing.expect(try syncPersistenceTerminalEntriesFromSessions(&persistence, &sessions, allocator));
-    try std.testing.expectEqual(@as(usize, 0), persistence.terminal_entries.items.len);
-
-    sessions_storage[1].spawned = true;
-    sessions_storage[1].cwd_path = "/three";
-    try std.testing.expect(try syncPersistenceTerminalEntriesFromSessions(&persistence, &sessions, allocator));
-    try std.testing.expectEqual(@as(usize, 1), persistence.terminal_entries.items.len);
-    try std.testing.expectEqualStrings("/three", persistence.terminal_entries.items[0].path);
-
-    sessions_storage[1].agent_kind = .codex;
-    sessions_storage[1].agent_session_id = "sid-42";
-    sessions_storage[1].agent_metadata_captured = true;
-    try std.testing.expect(try syncPersistenceTerminalEntriesFromSessions(&persistence, &sessions, allocator));
-    try std.testing.expectEqualStrings("codex", persistence.terminal_entries.items[0].agent_type.?);
-    try std.testing.expectEqualStrings("sid-42", persistence.terminal_entries.items[0].agent_session_id.?);
-    try std.testing.expect(!(try syncPersistenceTerminalEntriesFromSessions(&persistence, &sessions, allocator)));
 }

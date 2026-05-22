@@ -305,6 +305,54 @@ pub const WorktreeConfig = struct {
     }
 };
 
+pub const InstanceMetadata = struct {
+    channel: []const u8,
+    id: []const u8,
+    display_name: []const u8,
+    emoji: []const u8,
+    created_from_cwd: ?[]const u8 = null,
+
+    pub fn saveForSession(self: InstanceMetadata, allocator: std.mem.Allocator) !void {
+        const path = try Persistence.getInstanceMetadataPathForSession(allocator, self.channel, self.id);
+        defer allocator.free(path);
+
+        const dir_path = fs.path.dirname(path) orelse return error.InvalidPath;
+        fs.cwd().makePath(dir_path) catch |err| switch (err) {
+            error.PathAlreadyExists => {},
+            else => return err,
+        };
+
+        var writer = std.Io.Writer.Allocating.init(allocator);
+        defer writer.deinit();
+        try self.serializeToWriter(&writer.writer);
+        try writeFileAtomicallyAbsolute(path, writer.written());
+    }
+
+    pub fn serializeToWriter(self: InstanceMetadata, writer: anytype) !void {
+        try writer.writeAll("channel = ");
+        try Persistence.writeTomlStringToWriter(writer, self.channel);
+        try writer.writeAll("\n");
+
+        try writer.writeAll("id = ");
+        try Persistence.writeTomlStringToWriter(writer, self.id);
+        try writer.writeAll("\n");
+
+        try writer.writeAll("display_name = ");
+        try Persistence.writeTomlStringToWriter(writer, self.display_name);
+        try writer.writeAll("\n");
+
+        try writer.writeAll("emoji = ");
+        try Persistence.writeTomlStringToWriter(writer, self.emoji);
+        try writer.writeAll("\n");
+
+        if (self.created_from_cwd) |cwd| {
+            try writer.writeAll("created_from_cwd = ");
+            try Persistence.writeTomlStringToWriter(writer, cwd);
+            try writer.writeAll("\n");
+        }
+    }
+};
+
 pub const Persistence = struct {
     const terminal_key_prefix = "terminal_";
     const max_recent_folders: usize = 1000;
@@ -362,9 +410,24 @@ pub const Persistence = struct {
     }
 
     pub fn load(allocator: std.mem.Allocator) !Persistence {
-        const persistence_path = try getPersistencePath(allocator);
+        return try loadForInstance(allocator, null);
+    }
+
+    pub fn loadForInstance(allocator: std.mem.Allocator, instance_name: ?[]const u8) !Persistence {
+        const persistence_path = try getPersistencePathForInstance(allocator, instance_name);
         defer allocator.free(persistence_path);
 
+        return try loadFromPath(allocator, persistence_path);
+    }
+
+    pub fn loadForSession(allocator: std.mem.Allocator, channel_name: []const u8, session_name: []const u8) !Persistence {
+        const persistence_path = try getPersistencePathForSession(allocator, channel_name, session_name);
+        defer allocator.free(persistence_path);
+
+        return try loadFromPath(allocator, persistence_path);
+    }
+
+    fn loadFromPath(allocator: std.mem.Allocator, persistence_path: []const u8) !Persistence {
         const file = fs.openFileAbsolute(persistence_path, .{}) catch |err| {
             return switch (err) {
                 error.FileNotFound => Persistence.init(allocator),
@@ -455,11 +518,28 @@ pub const Persistence = struct {
     }
 
     pub fn save(self: Persistence, allocator: std.mem.Allocator) !void {
-        const persistence_path = try getPersistencePath(allocator);
+        try self.saveForInstance(allocator, null);
+    }
+
+    pub fn saveForInstance(self: Persistence, allocator: std.mem.Allocator, instance_name: ?[]const u8) !void {
+        const persistence_path = try getPersistencePathForInstance(allocator, instance_name);
         defer allocator.free(persistence_path);
 
         const persistence_dir = fs.path.dirname(persistence_path) orelse return error.InvalidPath;
-        fs.makeDirAbsolute(persistence_dir) catch |err| switch (err) {
+        fs.cwd().makePath(persistence_dir) catch |err| switch (err) {
+            error.PathAlreadyExists => {},
+            else => return err,
+        };
+
+        try self.saveToPath(allocator, persistence_path);
+    }
+
+    pub fn saveForSession(self: Persistence, allocator: std.mem.Allocator, channel_name: []const u8, session_name: []const u8) !void {
+        const persistence_path = try getPersistencePathForSession(allocator, channel_name, session_name);
+        defer allocator.free(persistence_path);
+
+        const persistence_dir = fs.path.dirname(persistence_path) orelse return error.InvalidPath;
+        fs.cwd().makePath(persistence_dir) catch |err| switch (err) {
             error.PathAlreadyExists => {},
             else => return err,
         };
@@ -528,8 +608,140 @@ pub const Persistence = struct {
     }
 
     pub fn getPersistencePath(allocator: std.mem.Allocator) ![]u8 {
+        return try getPersistencePathForInstance(allocator, null);
+    }
+
+    pub fn getConfigRootPath(allocator: std.mem.Allocator) ![]u8 {
         const home = std.posix.getenv("HOME") orelse return error.HomeNotFound;
-        return try fs.path.join(allocator, &[_][]const u8{ home, ".config", "architect", "persistence.toml" });
+        return try fs.path.join(allocator, &[_][]const u8{ home, ".config", "architect" });
+    }
+
+    pub fn getPersistencePathForInstance(allocator: std.mem.Allocator, instance_name: ?[]const u8) ![]u8 {
+        const config_root = try getConfigRootPath(allocator);
+        defer allocator.free(config_root);
+        const file_name = try persistenceFileNameForInstance(allocator, instance_name);
+        defer allocator.free(file_name);
+        return try fs.path.join(allocator, &[_][]const u8{ config_root, file_name });
+    }
+
+    pub fn getPersistencePathForSession(allocator: std.mem.Allocator, channel_name: []const u8, session_name: []const u8) ![]u8 {
+        const config_root = try getConfigRootPath(allocator);
+        defer allocator.free(config_root);
+        return try persistencePathForSessionUnderConfigRoot(allocator, config_root, channel_name, session_name);
+    }
+
+    pub fn getInstanceMetadataPathForSession(allocator: std.mem.Allocator, channel_name: []const u8, session_name: []const u8) ![]u8 {
+        const config_root = try getConfigRootPath(allocator);
+        defer allocator.free(config_root);
+        return try instanceMetadataPathForSessionUnderConfigRoot(allocator, config_root, channel_name, session_name);
+    }
+
+    pub fn persistencePathForSessionUnderConfigRoot(
+        allocator: std.mem.Allocator,
+        config_root: []const u8,
+        channel_name: []const u8,
+        session_name: []const u8,
+    ) ![]u8 {
+        const session_dir = try sessionDirectoryPathUnderConfigRoot(allocator, config_root, channel_name, session_name);
+        defer allocator.free(session_dir);
+        return try fs.path.join(allocator, &[_][]const u8{ session_dir, "persistence.toml" });
+    }
+
+    pub fn instanceMetadataPathForSessionUnderConfigRoot(
+        allocator: std.mem.Allocator,
+        config_root: []const u8,
+        channel_name: []const u8,
+        session_name: []const u8,
+    ) ![]u8 {
+        const session_dir = try sessionDirectoryPathUnderConfigRoot(allocator, config_root, channel_name, session_name);
+        defer allocator.free(session_dir);
+        return try fs.path.join(allocator, &[_][]const u8{ session_dir, "instance.toml" });
+    }
+
+    pub fn sessionDirectoryPathUnderConfigRoot(
+        allocator: std.mem.Allocator,
+        config_root: []const u8,
+        channel_name: []const u8,
+        session_name: []const u8,
+    ) ![]u8 {
+        const channel_dir = try pathComponentForName(allocator, channel_name);
+        defer allocator.free(channel_dir);
+        const session_dir = try pathComponentForName(allocator, session_name);
+        defer allocator.free(session_dir);
+
+        return try fs.path.join(allocator, &[_][]const u8{
+            config_root,
+            "instances",
+            channel_dir,
+            session_dir,
+        });
+    }
+
+    pub fn persistenceFileNameForInstance(allocator: std.mem.Allocator, instance_name: ?[]const u8) ![]u8 {
+        const raw_name = instance_name orelse return try allocator.dupe(u8, "persistence.toml");
+        const trimmed = std.mem.trim(u8, raw_name, " \t\r\n");
+        if (trimmed.len == 0) return error.InvalidInstanceName;
+
+        var out = std.ArrayList(u8).empty;
+        errdefer out.deinit(allocator);
+        try out.appendSlice(allocator, "persistence-");
+        const prefix_len = out.items.len;
+
+        var previous_dash = false;
+        for (trimmed) |ch| {
+            const safe_ch: u8 = if (std.ascii.isAlphanumeric(ch) or ch == '_')
+                ch
+            else
+                '-';
+
+            if (safe_ch == '-') {
+                if (out.items.len == prefix_len or previous_dash) continue;
+                previous_dash = true;
+            } else {
+                previous_dash = false;
+            }
+
+            try out.append(allocator, safe_ch);
+        }
+
+        if (out.items.len > prefix_len and out.items[out.items.len - 1] == '-') {
+            out.items.len -= 1;
+        }
+        if (out.items.len == prefix_len) return error.InvalidInstanceName;
+
+        try out.appendSlice(allocator, ".toml");
+        return try out.toOwnedSlice(allocator);
+    }
+
+    pub fn pathComponentForName(allocator: std.mem.Allocator, raw_name: []const u8) ![]u8 {
+        const trimmed = std.mem.trim(u8, raw_name, " \t\r\n");
+        if (trimmed.len == 0) return error.InvalidInstanceName;
+
+        var out = std.ArrayList(u8).empty;
+        errdefer out.deinit(allocator);
+
+        var previous_dash = false;
+        for (trimmed) |ch| {
+            const safe_ch: u8 = if (std.ascii.isAlphanumeric(ch) or ch == '_' or ch == '-')
+                ch
+            else
+                '-';
+
+            if (safe_ch == '-') {
+                if (out.items.len == 0 or previous_dash) continue;
+                previous_dash = true;
+            } else {
+                previous_dash = false;
+            }
+
+            try out.append(allocator, safe_ch);
+        }
+
+        if (out.items.len > 0 and out.items[out.items.len - 1] == '-') {
+            out.items.len -= 1;
+        }
+        if (out.items.len == 0) return error.InvalidInstanceName;
+        return try out.toOwnedSlice(allocator);
     }
 
     pub fn appendTerminalEntry(
@@ -716,7 +928,7 @@ pub const Persistence = struct {
         }
     }
 
-    fn writeTomlStringToWriter(writer: anytype, value: []const u8) !void {
+    pub fn writeTomlStringToWriter(writer: anytype, value: []const u8) !void {
         _ = try writer.writeByte('"');
         var curr_pos: usize = 0;
         while (curr_pos < value.len) {
@@ -811,8 +1023,8 @@ pub const Config = struct {
             \\# This file is read-only to the application - edit freely via Cmd+,
             \\# Changes take effect on next launch.
             \\#
-            \\# Note: Window position/size and font size are stored in persistence.toml
-            \\# and managed automatically by the application.
+            \\# Note: Window position/size and font size are stored in the active
+            \\# session's persistence.toml and managed automatically by the application.
             \\
             \\# Font options
             \\# [font]
@@ -1160,10 +1372,57 @@ test "Persistence.appendLegacyTerminalEntries migrates row-major order" {
     try std.testing.expectEqualStrings("/b", persistence.terminal_entries.items[1].path);
 }
 
+test "Persistence.persistenceFileNameForInstance returns default and sanitized names" {
+    const allocator = std.testing.allocator;
+
+    const default_name = try Persistence.persistenceFileNameForInstance(allocator, null);
+    defer allocator.free(default_name);
+    try std.testing.expectEqualStrings("persistence.toml", default_name);
+
+    const instance_name = try Persistence.persistenceFileNameForInstance(allocator, "VS Code / Right");
+    defer allocator.free(instance_name);
+    try std.testing.expectEqualStrings("persistence-VS-Code-Right.toml", instance_name);
+}
+
+test "Persistence.persistencePathForSessionUnderConfigRoot nests by channel and session" {
+    const allocator = std.testing.allocator;
+
+    const path = try Persistence.persistencePathForSessionUnderConfigRoot(
+        allocator,
+        "/tmp/architect-config",
+        "Stable",
+        "HappyOtter",
+    );
+    defer allocator.free(path);
+
+    try std.testing.expectEqualStrings("/tmp/architect-config/instances/Stable/HappyOtter/persistence.toml", path);
+}
+
+test "InstanceMetadata serializes channel and display name" {
+    const allocator = std.testing.allocator;
+
+    var writer = std.Io.Writer.Allocating.init(allocator);
+    defer writer.deinit();
+
+    try (InstanceMetadata{
+        .channel = "Stable",
+        .id = "HappyOtter",
+        .display_name = "Happy Otter",
+        .emoji = "🦦",
+        .created_from_cwd = "/Users/me/project",
+    }).serializeToWriter(&writer.writer);
+
+    const serialized = writer.written();
+    try std.testing.expect(std.mem.indexOf(u8, serialized, "channel = \"Stable\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, serialized, "id = \"HappyOtter\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, serialized, "display_name = \"Happy Otter\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, serialized, "emoji = \"🦦\"") != null);
+}
+
 test "Persistence save/load round-trip preserves all fields" {
     const allocator = std.testing.allocator;
 
-    const tmp_dir = std.testing.tmpDir(.{});
+    var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
     const tmp_path = try tmp_dir.dir.realpathAlloc(allocator, ".");

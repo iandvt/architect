@@ -2,47 +2,104 @@
 set -euo pipefail
 
 if [[ $# -lt 2 ]]; then
-    echo "Usage: $0 <executable> <output-dir> [architect-mcp-executable] [--debug] [--unsigned]"
+    echo "Usage: $0 <executable> <output-dir> [architect-mcp-executable] [--with-mcp <path>] [--debug] [--unsigned] [--app-name <name>]"
     exit 1
 fi
 
 EXECUTABLE="$1"
 OUTPUT_DIR="$2"
+shift 2
+
 MCP_EXECUTABLE=""
+INCLUDE_MCP=false
 DEBUG_MODE=false
 SIGN_APP=true
+APP_NAME="Architect (Stable)"
 
-for arg in "${@:3}"; do
-    case "$arg" in
+while [[ $# -gt 0 ]]; do
+    case "$1" in
         --debug)
             DEBUG_MODE=true
+            shift
             ;;
         --unsigned)
             SIGN_APP=false
+            shift
+            ;;
+        --with-mcp)
+            if [[ $# -lt 2 ]]; then
+                echo "--with-mcp requires a value"
+                exit 1
+            fi
+            INCLUDE_MCP=true
+            MCP_EXECUTABLE="$2"
+            shift 2
+            ;;
+        --with-mcp=*)
+            INCLUDE_MCP=true
+            MCP_EXECUTABLE="${1#--with-mcp=}"
+            shift
+            ;;
+        --app-name)
+            if [[ $# -lt 2 ]]; then
+                echo "--app-name requires a value"
+                exit 1
+            fi
+            APP_NAME="$2"
+            shift 2
+            ;;
+        --app-name=*)
+            APP_NAME="${1#--app-name=}"
+            shift
+            ;;
+        --*)
+            echo "Unknown flag: $1"
+            exit 1
             ;;
         *)
             if [[ -z "$MCP_EXECUTABLE" ]]; then
-                MCP_EXECUTABLE="$arg"
+                INCLUDE_MCP=true
+                MCP_EXECUTABLE="$1"
+                shift
             else
-                echo "Unknown flag: $arg"
+                echo "Unknown argument: $1"
                 exit 1
             fi
             ;;
     esac
 done
 
-if [[ -z "$MCP_EXECUTABLE" ]]; then
-    MCP_EXECUTABLE="$(dirname "$EXECUTABLE")/architect-mcp"
+if [[ -z "$APP_NAME" ]]; then
+    echo "Error: app name must not be empty"
+    exit 1
 fi
 
-APP_NAME="Architect"
+if [[ "$INCLUDE_MCP" == true && -z "$MCP_EXECUTABLE" ]]; then
+    echo "Error: MCP helper path must not be empty"
+    exit 1
+fi
+
+BUNDLE_IDENTIFIER="com.forketyfork.architect"
+app_name_pattern='^Architect \(([^)]+)\)$'
+if [[ ! "$APP_NAME" =~ $app_name_pattern ]]; then
+    echo "Error: app name must be in the form 'Architect (<channel>)'"
+    exit 1
+fi
+
+bundle_suffix=$(printf '%s' "${BASH_REMATCH[1]}" | tr '[:upper:]' '[:lower:]' | tr -cs '[:alnum:]' '-')
+bundle_suffix="${bundle_suffix#-}"
+bundle_suffix="${bundle_suffix%-}"
+if [[ -n "$bundle_suffix" ]]; then
+    BUNDLE_IDENTIFIER="$BUNDLE_IDENTIFIER.$bundle_suffix"
+fi
+
 APP_DIR="$OUTPUT_DIR/${APP_NAME}.app"
 CONTENTS_DIR="$APP_DIR/Contents"
 MACOS_DIR="$CONTENTS_DIR/MacOS"
 RESOURCES_DIR="$CONTENTS_DIR/Resources"
 LIB_DIR="$MACOS_DIR/lib"
 SHARE_DIR="$CONTENTS_DIR/share/architect"
-ICON_SOURCE="assets/macos/${APP_NAME}.icns"
+ICON_SOURCE="assets/macos/Architect.icns"
 SCRIPT_DIR="$(cd -- "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd -- "$SCRIPT_DIR/.." && pwd)"
 
@@ -55,11 +112,15 @@ if [[ "$SIGN_APP" == true ]]; then
 fi
 
 echo "Bundling macOS application: $EXECUTABLE -> $APP_DIR"
-echo "Including MCP helper: $MCP_EXECUTABLE"
+if [[ "$INCLUDE_MCP" == true ]]; then
+    echo "Including MCP helper: $MCP_EXECUTABLE"
 
-if [[ ! -f "$MCP_EXECUTABLE" ]]; then
-    echo "Error: architect-mcp executable not found: $MCP_EXECUTABLE"
-    exit 1
+    if [[ ! -f "$MCP_EXECUTABLE" ]]; then
+        echo "Error: architect-mcp executable not found: $MCP_EXECUTABLE"
+        exit 1
+    fi
+else
+    echo "MCP helper: not bundled"
 fi
 
 rm -rf "$APP_DIR"
@@ -75,7 +136,7 @@ cat > "$CONTENTS_DIR/Info.plist" <<EOF
     <key>CFBundleDisplayName</key>
     <string>${APP_NAME}</string>
     <key>CFBundleIdentifier</key>
-    <string>com.forketyfork.architect</string>
+    <string>${BUNDLE_IDENTIFIER}</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleExecutable</key>
@@ -124,8 +185,10 @@ fi
 # Copy the binary as the main executable (dylibs use @executable_path/lib/)
 cp "$EXECUTABLE" "$MACOS_DIR/architect"
 chmod +x "$MACOS_DIR/architect"
-cp "$MCP_EXECUTABLE" "$MACOS_DIR/architect-mcp"
-chmod +x "$MACOS_DIR/architect-mcp"
+if [[ "$INCLUDE_MCP" == true ]]; then
+    cp "$MCP_EXECUTABLE" "$MACOS_DIR/architect-mcp"
+    chmod +x "$MACOS_DIR/architect-mcp"
+fi
 
 seen_list=""
 queue=""
@@ -190,7 +253,9 @@ echo "Analyzing dynamic library dependencies..."
 initial_deps=$(
     {
         nix_deps_for "$EXECUTABLE"
-        nix_deps_for "$MCP_EXECUTABLE"
+        if [[ "$INCLUDE_MCP" == true ]]; then
+            nix_deps_for "$MCP_EXECUTABLE"
+        fi
     } | sort -u
 )
 
@@ -243,7 +308,9 @@ if [[ "$skip_lib_patching" != true ]]; then
     done
 
     patch_binary_deps "$MACOS_DIR/architect" "architect"
-    patch_binary_deps "$MACOS_DIR/architect-mcp" "architect-mcp"
+    if [[ "$INCLUDE_MCP" == true ]]; then
+        patch_binary_deps "$MACOS_DIR/architect-mcp" "architect-mcp"
+    fi
 
     echo ""
     echo "Verifying final dependencies..."
@@ -251,7 +318,7 @@ if [[ "$skip_lib_patching" != true ]]; then
         echo "Warning: Nix store references remain in architect binary"
         otool -L "$MACOS_DIR/architect" | grep '/nix/store'
     fi
-    if otool -L "$MACOS_DIR/architect-mcp" | grep -q '/nix/store'; then
+    if [[ "$INCLUDE_MCP" == true ]] && otool -L "$MACOS_DIR/architect-mcp" | grep -q '/nix/store'; then
         echo "Warning: Nix store references remain in architect-mcp binary"
         otool -L "$MACOS_DIR/architect-mcp" | grep '/nix/store'
     fi
@@ -287,8 +354,10 @@ if [[ "$SIGN_APP" == true ]]; then
     done
     shopt -u nullglob
 
-    echo "Signing architect-mcp..."
-    codesign --force --sign - --entitlements "$ENTITLEMENTS" "$MACOS_DIR/architect-mcp"
+    if [[ "$INCLUDE_MCP" == true ]]; then
+        echo "Signing architect-mcp..."
+        codesign --force --sign - --entitlements "$ENTITLEMENTS" "$MACOS_DIR/architect-mcp"
+    fi
 
     echo "Signing architect..."
     codesign --force --sign - --entitlements "$ENTITLEMENTS" "$MACOS_DIR/architect"
@@ -301,7 +370,9 @@ else
     echo ""
     echo "Removing embedded signatures (--unsigned)..."
     remove_signature_if_present "$MACOS_DIR/architect"
-    remove_signature_if_present "$MACOS_DIR/architect-mcp"
+    if [[ "$INCLUDE_MCP" == true ]]; then
+        remove_signature_if_present "$MACOS_DIR/architect-mcp"
+    fi
     shopt -s nullglob
     for lib in "$LIB_DIR"/*.dylib; do
         remove_signature_if_present "$lib"
@@ -316,4 +387,4 @@ find "$OUTPUT_DIR" -type f
 
 echo ""
 echo "To distribute, package the entire directory:"
-echo "  cd $OUTPUT_DIR && tar -czf architect-macos.tar.gz ${APP_NAME}.app"
+echo "  cd $OUTPUT_DIR && tar -czf architect-macos.tar.gz \"${APP_NAME}.app\""

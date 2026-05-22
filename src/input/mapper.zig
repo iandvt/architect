@@ -17,7 +17,7 @@ pub fn fontSizeShortcut(key: c.SDL_Keycode, mod: c.SDL_Keymod) ?FontSizeDirectio
 
 pub fn gridNavShortcut(key: c.SDL_Keycode, mod: c.SDL_Keymod) ?GridNavDirection {
     if ((mod & c.SDL_KMOD_GUI) == 0) return null;
-    if ((mod & c.SDL_KMOD_SHIFT) != 0) return null;
+    if ((mod & (c.SDL_KMOD_SHIFT | c.SDL_KMOD_CTRL | c.SDL_KMOD_ALT)) != 0) return null;
     return switch (key) {
         c.SDLK_UP => .up,
         c.SDLK_DOWN => .down,
@@ -27,45 +27,48 @@ pub fn gridNavShortcut(key: c.SDL_Keycode, mod: c.SDL_Keymod) ?GridNavDirection 
     };
 }
 
+pub fn plainGridNavShortcut(key: c.SDL_Keycode, mod: c.SDL_Keymod) ?GridNavDirection {
+    if ((mod & (c.SDL_KMOD_GUI | c.SDL_KMOD_SHIFT | c.SDL_KMOD_CTRL | c.SDL_KMOD_ALT)) != 0) return null;
+    return switch (key) {
+        c.SDLK_UP => .up,
+        c.SDLK_DOWN => .down,
+        c.SDLK_LEFT => .left,
+        c.SDLK_RIGHT => .right,
+        else => null,
+    };
+}
+
+pub fn gridViewShortcut(key: c.SDL_Keycode, mod: c.SDL_Keymod) bool {
+    if ((mod & c.SDL_KMOD_GUI) == 0) return false;
+    if ((mod & (c.SDL_KMOD_SHIFT | c.SDL_KMOD_CTRL | c.SDL_KMOD_ALT)) != 0) return false;
+    return key == c.SDLK_G;
+}
+
+pub fn gridSelectShortcut(key: c.SDL_Keycode, mod: c.SDL_Keymod) bool {
+    if ((mod & (c.SDL_KMOD_GUI | c.SDL_KMOD_SHIFT | c.SDL_KMOD_CTRL | c.SDL_KMOD_ALT)) != 0) return false;
+    return key == c.SDLK_RETURN;
+}
+
+pub fn gridExpandShortcut(key: c.SDL_Keycode, mod: c.SDL_Keymod, mode: app_state.ViewMode) bool {
+    if (mode != .Grid) return false;
+    return gridSelectShortcut(key, mod);
+}
+
+pub fn commandGridNavShortcut(key: c.SDL_Keycode, mod: c.SDL_Keymod, mode: app_state.ViewMode) ?GridNavDirection {
+    if (mode != .Full) return null;
+    return gridNavShortcut(key, mod);
+}
+
 pub fn canHandleEscapePress(mode: app_state.ViewMode) bool {
     return mode != .Grid and mode != .Collapsing and mode != .GridResizing;
 }
 
-/// Returns terminal index (0-9) for Cmd+1..9,0 shortcuts.
-/// Cmd+1 returns 0, Cmd+2 returns 1, ..., Cmd+9 returns 8, Cmd+0 returns 9.
-pub fn terminalSwitchShortcut(key: c.SDL_Keycode, mod: c.SDL_Keymod, max_terminals: usize) ?usize {
-    if ((mod & c.SDL_KMOD_GUI) == 0) return null;
-    if ((mod & (c.SDL_KMOD_SHIFT | c.SDL_KMOD_CTRL | c.SDL_KMOD_ALT)) != 0) return null;
-
-    const idx: ?usize = if (key >= c.SDLK_1 and key <= c.SDLK_9)
-        @intCast(key - c.SDLK_1)
-    else if (key == c.SDLK_0)
-        9
-    else
-        null;
-
-    if (idx) |i| {
-        if (i < max_terminals) return i;
-    }
+pub fn terminalSwitchShortcut(_: c.SDL_Keycode, _: c.SDL_Keymod, _: usize) ?usize {
     return null;
 }
 
-const terminal_hotkey_labels = [_][]const u8{
-    "⌘1",
-    "⌘2",
-    "⌘3",
-    "⌘4",
-    "⌘5",
-    "⌘6",
-    "⌘7",
-    "⌘8",
-    "⌘9",
-    "⌘0",
-};
-
-pub fn terminalHotkeyLabel(index: usize) ?[]const u8 {
-    if (index >= terminal_hotkey_labels.len) return null;
-    return terminal_hotkey_labels[index];
+pub fn terminalHotkeyLabel(_: usize) ?[]const u8 {
+    return null;
 }
 
 /// Compute CSI-u modifier value from SDL modifiers.
@@ -128,6 +131,40 @@ pub fn keyToChar(key: c.SDL_Keycode, mod: c.SDL_Keymod) ?u8 {
 /// cursor_keys: when true (DECCKM mode set), arrow keys use SS3 sequences (\x1bO...)
 /// kitty_enabled: when true, use Kitty keyboard protocol for modified special keys
 pub fn encodeKeyWithMod(key: c.SDL_Keycode, mod: c.SDL_Keymod, cursor_keys: bool, kitty_enabled: bool, buf: []u8) usize {
+    // Modified special keys: Tab, Enter, Backspace
+    // When kitty enabled: any modifier combo emits CSI-u before legacy shortcuts.
+    // When kitty disabled: only Shift+Tab has special encoding, others fall through to legacy.
+    const special_keycode: ?u8 = switch (key) {
+        c.SDLK_TAB => 9,
+        c.SDLK_RETURN => 13,
+        c.SDLK_BACKSPACE => 127,
+        else => null,
+    };
+    if (special_keycode) |kc| {
+        const has_modifier = (mod & (c.SDL_KMOD_SHIFT | c.SDL_KMOD_CTRL | c.SDL_KMOD_ALT | c.SDL_KMOD_GUI)) != 0;
+        if (kitty_enabled and has_modifier) {
+            const csi_mod = computeCsiModifier(mod);
+            const result = std.fmt.bufPrint(buf, "\x1b[{d};{d}u", .{ kc, csi_mod }) catch return 0;
+            return result.len;
+        } else if (!kitty_enabled and (mod & c.SDL_KMOD_SHIFT) != 0) {
+            return switch (key) {
+                c.SDLK_TAB => blk: {
+                    @memcpy(buf[0..3], "\x1b[Z");
+                    break :blk 3;
+                },
+                c.SDLK_RETURN => blk: {
+                    buf[0] = '\r';
+                    break :blk 1;
+                },
+                c.SDLK_BACKSPACE => blk: {
+                    buf[0] = 127;
+                    break :blk 1;
+                },
+                else => 0,
+            };
+        }
+    }
+
     if (mod & c.SDL_KMOD_CTRL != 0) {
         if (key >= c.SDLK_A and key <= c.SDLK_Z) {
             buf[0] = @as(u8, @intCast(key - c.SDLK_A + 1));
@@ -185,42 +222,6 @@ pub fn encodeKeyWithMod(key: c.SDL_Keycode, mod: c.SDL_Keymod, cursor_keys: bool
             },
             else => 0,
         };
-    }
-
-    // Modified special keys: Tab, Enter, Backspace
-    // When kitty enabled: any modifier combo emits CSI-u
-    // When kitty disabled: only Shift+Tab has special encoding, others fall through to legacy
-    const special_keycode: ?u8 = switch (key) {
-        c.SDLK_TAB => 9,
-        c.SDLK_RETURN => 13,
-        c.SDLK_BACKSPACE => 127,
-        else => null,
-    };
-    if (special_keycode) |kc| {
-        const has_modifier = (mod & (c.SDL_KMOD_SHIFT | c.SDL_KMOD_CTRL | c.SDL_KMOD_ALT | c.SDL_KMOD_GUI)) != 0;
-        if (kitty_enabled and has_modifier) {
-            // Full CSI-u encoding with all modifier bits: ESC [ keycode ; modifier+1 u
-            const csi_mod = computeCsiModifier(mod);
-            const result = std.fmt.bufPrint(buf, "\x1b[{d};{d}u", .{ kc, csi_mod }) catch return 0;
-            return result.len;
-        } else if (!kitty_enabled and (mod & c.SDL_KMOD_SHIFT) != 0) {
-            // Legacy encoding for Shift-modified keys
-            return switch (key) {
-                c.SDLK_TAB => blk: {
-                    @memcpy(buf[0..3], "\x1b[Z");
-                    break :blk 3;
-                },
-                c.SDLK_RETURN => blk: {
-                    buf[0] = '\r';
-                    break :blk 1;
-                },
-                c.SDLK_BACKSPACE => blk: {
-                    buf[0] = 127;
-                    break :blk 1;
-                },
-                else => 0,
-            };
-        }
     }
 
     return switch (key) {
@@ -412,9 +413,52 @@ test "encodeKeyWithMod - unknown key" {
 test "fontSizeShortcut - plus/minus variants" {
     try std.testing.expectEqual(FontSizeDirection.increase, fontSizeShortcut(c.SDLK_EQUALS, c.SDL_KMOD_GUI | c.SDL_KMOD_SHIFT).?);
     try std.testing.expectEqual(FontSizeDirection.decrease, fontSizeShortcut(c.SDLK_MINUS, c.SDL_KMOD_GUI).?);
-    try std.testing.expectEqual(FontSizeDirection.increase, fontSizeShortcut(c.SDLK_KP_PLUS, c.SDL_KMOD_GUI).?);
+    try std.testing.expect(fontSizeShortcut(c.SDLK_KP_PLUS, c.SDL_KMOD_GUI) == null);
+    try std.testing.expectEqual(FontSizeDirection.increase, fontSizeShortcut(c.SDLK_KP_PLUS, c.SDL_KMOD_GUI | c.SDL_KMOD_SHIFT).?);
     try std.testing.expectEqual(FontSizeDirection.decrease, fontSizeShortcut(c.SDLK_KP_MINUS, c.SDL_KMOD_GUI).?);
     try std.testing.expect(fontSizeShortcut(c.SDLK_EQUALS, c.SDL_KMOD_SHIFT) == null);
+}
+
+test "gridViewShortcut recognizes plain command G" {
+    try std.testing.expect(gridViewShortcut(c.SDLK_G, c.SDL_KMOD_GUI));
+    try std.testing.expect(!gridViewShortcut(c.SDLK_G, 0));
+    try std.testing.expect(!gridViewShortcut(c.SDLK_G, c.SDL_KMOD_GUI | c.SDL_KMOD_SHIFT));
+    try std.testing.expect(!gridViewShortcut(c.SDLK_G, c.SDL_KMOD_GUI | c.SDL_KMOD_ALT));
+}
+
+test "plainGridNavShortcut recognizes unmodified arrows only" {
+    try std.testing.expectEqual(GridNavDirection.up, plainGridNavShortcut(c.SDLK_UP, 0).?);
+    try std.testing.expectEqual(GridNavDirection.down, plainGridNavShortcut(c.SDLK_DOWN, 0).?);
+    try std.testing.expectEqual(GridNavDirection.left, plainGridNavShortcut(c.SDLK_LEFT, 0).?);
+    try std.testing.expectEqual(GridNavDirection.right, plainGridNavShortcut(c.SDLK_RIGHT, 0).?);
+    try std.testing.expect(plainGridNavShortcut(c.SDLK_UP, c.SDL_KMOD_GUI) == null);
+    try std.testing.expect(plainGridNavShortcut(c.SDLK_DOWN, c.SDL_KMOD_SHIFT) == null);
+    try std.testing.expect(plainGridNavShortcut(c.SDLK_LEFT, c.SDL_KMOD_CTRL) == null);
+    try std.testing.expect(plainGridNavShortcut(c.SDLK_RIGHT, c.SDL_KMOD_ALT) == null);
+    try std.testing.expect(plainGridNavShortcut(c.SDLK_RETURN, 0) == null);
+}
+
+test "gridSelectShortcut recognizes unmodified return only" {
+    try std.testing.expect(gridSelectShortcut(c.SDLK_RETURN, 0));
+    try std.testing.expect(!gridSelectShortcut(c.SDLK_RETURN, c.SDL_KMOD_GUI));
+    try std.testing.expect(!gridSelectShortcut(c.SDLK_RETURN, c.SDL_KMOD_SHIFT));
+    try std.testing.expect(!gridSelectShortcut(c.SDLK_RETURN, c.SDL_KMOD_CTRL));
+    try std.testing.expect(!gridSelectShortcut(c.SDLK_RETURN, c.SDL_KMOD_ALT));
+    try std.testing.expect(!gridSelectShortcut(c.SDLK_G, 0));
+}
+
+test "gridExpandShortcut only expands grid with unmodified return" {
+    try std.testing.expect(gridExpandShortcut(c.SDLK_RETURN, 0, .Grid));
+    try std.testing.expect(!gridExpandShortcut(c.SDLK_RETURN, c.SDL_KMOD_GUI, .Grid));
+    try std.testing.expect(!gridExpandShortcut(c.SDLK_RETURN, 0, .Full));
+}
+
+test "commandGridNavShortcut is full-view only" {
+    try std.testing.expectEqual(GridNavDirection.left, commandGridNavShortcut(c.SDLK_LEFT, c.SDL_KMOD_GUI, .Full).?);
+    try std.testing.expect(commandGridNavShortcut(c.SDLK_LEFT, c.SDL_KMOD_GUI, .Grid) == null);
+    try std.testing.expect(commandGridNavShortcut(c.SDLK_LEFT, 0, .Full) == null);
+    try std.testing.expect(commandGridNavShortcut(c.SDLK_LEFT, c.SDL_KMOD_GUI | c.SDL_KMOD_ALT, .Full) == null);
+    try std.testing.expect(commandGridNavShortcut(c.SDLK_LEFT, c.SDL_KMOD_GUI | c.SDL_KMOD_CTRL, .Full) == null);
 }
 
 test "encodeKeyWithMod - shift+tab legacy mode" {
@@ -468,21 +512,18 @@ test "encodeKeyWithMod - ctrl+shift+enter kitty mode" {
 test "encodeKeyWithMod - alt+shift+tab kitty mode" {
     var buf: [16]u8 = undefined;
     const n = encodeKeyWithMod(c.SDLK_TAB, c.SDL_KMOD_ALT | c.SDL_KMOD_SHIFT, false, true, &buf);
-    // Alt(2) + Shift(1) + 1 = 4
     try std.testing.expectEqualSlices(u8, "\x1b[9;4u", buf[0..n]);
 }
 
 test "encodeKeyWithMod - ctrl+alt+shift+backspace kitty mode" {
     var buf: [16]u8 = undefined;
     const n = encodeKeyWithMod(c.SDLK_BACKSPACE, c.SDL_KMOD_CTRL | c.SDL_KMOD_ALT | c.SDL_KMOD_SHIFT, false, true, &buf);
-    // Ctrl(4) + Alt(2) + Shift(1) + 1 = 8
     try std.testing.expectEqualSlices(u8, "\x1b[127;8u", buf[0..n]);
 }
 
 test "encodeKeyWithMod - alt+enter kitty mode" {
     var buf: [16]u8 = undefined;
     const n = encodeKeyWithMod(c.SDLK_RETURN, c.SDL_KMOD_ALT, false, true, &buf);
-    // Alt(2) + 1 = 3
     try std.testing.expectEqualSlices(u8, "\x1b[13;3u", buf[0..n]);
 }
 
@@ -696,19 +737,9 @@ test "encodeMouseMotion - left button held SGR" {
     try std.testing.expectEqualSlices(u8, "\x1b[<32;3;2M", buf[0..n]);
 }
 
-test "terminalSwitchShortcut - cmd+1 returns 0" {
-    try std.testing.expectEqual(@as(?usize, 0), terminalSwitchShortcut(c.SDLK_1, c.SDL_KMOD_GUI, 9));
-}
-
-test "terminalSwitchShortcut - cmd+9 returns 8" {
-    try std.testing.expectEqual(@as(?usize, 8), terminalSwitchShortcut(c.SDLK_9, c.SDL_KMOD_GUI, 9));
-}
-
-test "terminalSwitchShortcut - cmd+0 returns 9" {
-    try std.testing.expectEqual(@as(?usize, 9), terminalSwitchShortcut(c.SDLK_0, c.SDL_KMOD_GUI, 10));
-}
-
-test "terminalSwitchShortcut - cmd+0 returns null when max is 9" {
+test "terminalSwitchShortcut - command digit shortcuts are disabled" {
+    try std.testing.expect(terminalSwitchShortcut(c.SDLK_1, c.SDL_KMOD_GUI, 9) == null);
+    try std.testing.expect(terminalSwitchShortcut(c.SDLK_9, c.SDL_KMOD_GUI, 9) == null);
     try std.testing.expect(terminalSwitchShortcut(c.SDLK_0, c.SDL_KMOD_GUI, 9) == null);
 }
 
@@ -728,14 +759,8 @@ test "terminalSwitchShortcut - non-digit key returns null" {
     try std.testing.expect(terminalSwitchShortcut(c.SDLK_A, c.SDL_KMOD_GUI, 9) == null);
 }
 
-test "terminalHotkeyLabel - index 0 returns cmd+1" {
-    try std.testing.expectEqualStrings("⌘1", terminalHotkeyLabel(0).?);
-}
-
-test "terminalHotkeyLabel - index 9 returns cmd+0" {
-    try std.testing.expectEqualStrings("⌘0", terminalHotkeyLabel(9).?);
-}
-
-test "terminalHotkeyLabel - out of range returns null" {
+test "terminalHotkeyLabel - command digit labels are hidden" {
+    try std.testing.expect(terminalHotkeyLabel(0) == null);
+    try std.testing.expect(terminalHotkeyLabel(9) == null);
     try std.testing.expect(terminalHotkeyLabel(10) == null);
 }

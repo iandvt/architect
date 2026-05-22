@@ -897,7 +897,8 @@ test "parseSpawnRequestFromValue rejects invalid shapes" {
     for (cases) |case| {
         var parsed = try std.json.parseFromSlice(std.json.Value, allocator, case, .{});
         defer parsed.deinit();
-        if (parseSpawnRequestFromValue(allocator, parsed.value)) |*request| {
+        if (parseSpawnRequestFromValue(allocator, parsed.value)) |request_value| {
+            var request = request_value;
             request.deinit(allocator);
             try std.testing.expect(false);
         } else |_| {}
@@ -960,7 +961,11 @@ test "fallback control runtime directory does not use TMPDIR" {
     const path = try fallbackControlRuntimeDirAlloc(allocator);
     defer allocator.free(path);
 
-    try std.testing.expect(std.mem.indexOf(u8, path, "architect") != null);
+    if (builtin.os.tag == .macos) {
+        try std.testing.expect(std.mem.indexOf(u8, path, "Library/Caches/Architect/runtime") != null);
+    } else {
+        try std.testing.expect(std.mem.indexOf(u8, path, "architect") != null);
+    }
     try std.testing.expect(std.mem.indexOf(u8, path, "nix-shell.") == null);
 }
 

@@ -75,12 +75,13 @@ pub const GridLayout = struct {
         self.animations.deinit(self.allocator);
     }
 
-    /// Calculate optimal grid dimensions for a given terminal count.
-    /// Maintains cols >= rows invariant.
+    /// Calculate grid dimensions for a given terminal count.
+    /// The first split stacks vertically, then larger grids stay compact and
+    /// favor wider layouts.
     pub fn calculateDimensions(count: usize) struct { cols: usize, rows: usize } {
         if (count == 0) return .{ .cols = 1, .rows = 1 };
         if (count == 1) return .{ .cols = 1, .rows = 1 };
-        if (count == 2) return .{ .cols = 2, .rows = 1 };
+        if (count == 2) return .{ .cols = 1, .rows = 2 };
 
         // Find smallest grid where cols >= rows and cols * rows >= count
         var rows: usize = 1;
@@ -267,9 +268,9 @@ test "calculateDimensions" {
     try std.testing.expectEqual(@as(usize, 1), GridLayout.calculateDimensions(1).cols);
     try std.testing.expectEqual(@as(usize, 1), GridLayout.calculateDimensions(1).rows);
 
-    // 2 terminals: 2x1
-    try std.testing.expectEqual(@as(usize, 2), GridLayout.calculateDimensions(2).cols);
-    try std.testing.expectEqual(@as(usize, 1), GridLayout.calculateDimensions(2).rows);
+    // 2 terminals: 1x2
+    try std.testing.expectEqual(@as(usize, 1), GridLayout.calculateDimensions(2).cols);
+    try std.testing.expectEqual(@as(usize, 2), GridLayout.calculateDimensions(2).rows);
 
     // 3-4 terminals: 2x2
     try std.testing.expectEqual(@as(usize, 2), GridLayout.calculateDimensions(3).cols);

@@ -27,7 +27,7 @@ This document covers local setup, build/test commands, and release steps.
 
    On macOS hosts where the active `MacOSX.sdk` only exposes `arm64e` targets, Zig 0.15.2 can fail during native Darwin linking with errors such as `undefined symbol: __availability_version_check`. The upstream tracker for this regression is https://codeberg.org/ziglang/zig/issues/31756.
 
-   The dev shell works around that by exposing `MacOSX15.4.sdk` through a fake `DEVELOPER_DIR` whose `usr/bin/xcrun` is a narrow shim for `xcrun --sdk macosx --show-sdk-path`. `build.zig` also resolves framework paths through `DEVELOPER_DIR` and `xcrun` before it falls back to hardcoded SDK locations, so the workaround does not need to force `SDKROOT`. Keeping the shim inside the fake developer tree means tools like `git` can still invoke `/usr/bin/xcrun` without tripping over the overridden `DEVELOPER_DIR`.
+   The dev shell works around that by exposing `MacOSX15.4.sdk` through a fake `DEVELOPER_DIR` whose `usr/bin/xcrun` is a narrow shim for the SDK probes used by Zig and Ghostty. It answers `macosx`, `iphoneos`, and `iphonesimulator` `--show-sdk-path` queries because Ghostty initializes an xcframework dependency path on Darwin even though Architect only consumes `ghostty-vt`; the synthetic iOS paths are only for dependency graph construction and are not a replacement for real iOS SDKs. `build.zig` also resolves framework paths through `DEVELOPER_DIR` and `xcrun` before it falls back to hardcoded SDK locations, so the workaround does not need to force `SDKROOT`. Keeping the shim inside the fake developer tree means tools like `git` can still invoke `/usr/bin/xcrun` without tripping over the overridden `DEVELOPER_DIR`.
 
    Remove this workaround once Architect no longer uses Zig 0.15.2, or once Zig handles the arm64e-only macOS SDK stubs correctly. If the active `MacOSX.sdk/usr/lib/libSystem.tbd` advertises `arm64-macos` again, the shell hook becomes a no-op.
 
@@ -53,10 +53,24 @@ zig build -Doptimize=ReleaseFast
 
 Run the application:
 ```bash
-just run
-# or
-zig build run
+just run          # uses --instance Dev
+just run Stable   # uses --instance Stable and generates a session name
 ```
+
+Direct binary launches must pass an instance channel, for example `zig build run -- --instance Dev`. Use `--session HappyOtter` to reopen a named session. App bundles named `Architect (Stable).app` and `Architect (Scratch).app` infer `Stable` and `Scratch` from the bundle name, then generate a fresh named session under that channel unless a session is provided from the command line.
+
+For local app-bundle launches, use the Makefile from the repository root:
+
+```bash
+make apps                              # rebuild .tmp/current-apps/Architect (Stable|Scratch).app
+make stable                            # launch a new Stable session through the app bundle
+make stable SESSION=HappyOtter         # restore a Stable session by session ID
+make scratch                           # launch a new Scratch session through the app bundle
+make scratch-restore SESSION=BoldBadger
+make sessions                          # list saved sessions under ~/.config/architect/instances
+```
+
+The `stable` and `scratch` targets launch a fresh named session when `SESSION` is unset and restore that session when `SESSION` is set. The explicit `stable-new`, `scratch-new`, `stable-restore`, and `scratch-restore` targets are available for scripts that should avoid that conditional behavior.
 
 ## Dependencies and Tooling
 
@@ -101,4 +115,8 @@ Each release includes:
 - `architect-macos-arm64.tar.gz` - Apple Silicon
 - `architect-macos-x86_64.tar.gz` - Intel
 
-Each archive contains `Architect.app` with both `Contents/MacOS/architect` and the stdio MCP helper `Contents/MacOS/architect-mcp`.
+Each archive contains two app bundles built from the same branch:
+- `Architect (Stable).app`
+- `Architect (Scratch).app`
+
+Both bundles contain `Contents/MacOS/architect`. The bundle name gives each app a distinct macOS bundle identifier and default Architect channel, so Stable and Scratch named sessions stay separate even though they share the same executable bits. The `architect-mcp` helper is still built by `zig build`, but app bundles omit it unless `scripts/bundle-macos.sh` is called with `--with-mcp <path>`.
