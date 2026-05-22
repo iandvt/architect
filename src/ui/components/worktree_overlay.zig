@@ -72,7 +72,6 @@ pub const WorktreeOverlayComponent = struct {
     };
 
     const EntryTex = struct {
-        hotkey: TextTex,
         path: TextTex,
     };
 
@@ -90,7 +89,6 @@ pub const WorktreeOverlayComponent = struct {
         title: TextTex,
         entries: []EntryTex,
         theme_fg: c.SDL_Color,
-        key_color: c.SDL_Color,
         title_color: c.SDL_Color,
         entry_color: c.SDL_Color,
         font_generation: u64,
@@ -213,35 +211,6 @@ pub const WorktreeOverlayComponent = struct {
                 if (self.creating) {
                     const handled = self.handleCreateModalKey(event, host, actions);
                     if (handled) return true;
-                }
-                const key = event.key.key;
-                const mod = event.key.mod;
-                const has_gui = (mod & c.SDL_KMOD_GUI) != 0;
-                const has_blocking_mod = (mod & (c.SDL_KMOD_ALT | c.SDL_KMOD_CTRL)) != 0;
-
-                if (has_gui and !has_blocking_mod and key == c.SDLK_T) {
-                    if (self.overlay.state == .Open) {
-                        self.overlay.startCollapsing(host.now_ms);
-                    } else {
-                        self.needs_refresh = true;
-                        self.overlay.startExpanding(host.now_ms);
-                    }
-                    return true;
-                }
-
-                if (self.overlay.state == .Open and has_gui and !has_blocking_mod) {
-                    if (key == c.SDLK_0) {
-                        self.startCreateModal(host);
-                        return true;
-                    }
-                    if (key >= c.SDLK_1 and key <= c.SDLK_9) {
-                        const digit_idx: usize = @intCast(key - c.SDLK_1);
-                        if (digit_idx < self.worktrees.items.len) {
-                            self.emitSwitch(actions, host.focused_session, self.worktrees.items[digit_idx].abs_path);
-                            self.overlay.startCollapsing(host.now_ms);
-                            return true;
-                        }
-                    }
                 }
             },
             c.SDL_EVENT_TEXT_INPUT => {
@@ -382,7 +351,7 @@ pub const WorktreeOverlayComponent = struct {
         const font_size = dpi.scale(@max(12, @min(20, @divFloor(rect.h, 2))), ui_scale);
         const fonts = cache.get(font_size) catch return;
 
-        const glyph = "⌘T";
+        const glyph = "WT";
         const fg = theme.foreground;
         const fg_color = c.SDL_Color{ .r = fg.r, .g = fg.g, .b = fg.b, .a = 255 };
         const surface = c.TTF_RenderText_Blended(fonts.regular, glyph.ptr, @intCast(glyph.len), fg_color) orelse return;
@@ -475,13 +444,6 @@ pub const WorktreeOverlayComponent = struct {
                     }
                 }
             }
-
-            _ = c.SDL_RenderTexture(renderer, entry_tex.hotkey.tex, null, &c.SDL_FRect{
-                .x = @floatFromInt(rect.x + scaled_margin),
-                .y = @floatFromInt(y_offset),
-                .w = @floatFromInt(entry_tex.hotkey.w),
-                .h = @floatFromInt(entry_tex.hotkey.h),
-            });
 
             const path_x_offset = trailing_gutter;
             _ = c.SDL_RenderTexture(renderer, entry_tex.path.tex, null, &c.SDL_FRect{
@@ -699,7 +661,6 @@ pub const WorktreeOverlayComponent = struct {
             return null;
         };
 
-        const key_color = c.SDL_Color{ .r = 97, .g = 175, .b = 239, .a = 255 };
         const entry_color = c.SDL_Color{ .r = 171, .g = 178, .b = 191, .a = 255 };
 
         const entries = self.allocator.alloc(EntryTex, entry_count) catch {
@@ -711,26 +672,11 @@ pub const WorktreeOverlayComponent = struct {
 
         const padding = dpi.scale(20, ui_scale);
         const overlay_width = dpi.scale(button_size_large, ui_scale);
-        const hotkey_spacing = dpi.scale(10, ui_scale);
         const trailing_gutter = dpi.scale(32, ui_scale);
 
         for (0..entry_count) |idx| {
-            var key_buf: [8]u8 = undefined;
-            const digit: u8 = @as(u8, @intCast(idx % 10));
-            const key_slice = std.fmt.bufPrint(&key_buf, "⌘{d}", .{digit}) catch |err| blk: {
-                log.warn("failed to format hotkey: {}", .{err});
-                break :blk key_buf[0..0];
-            };
-            const key_tex = makeTextTexture(renderer, entry_fonts.regular, key_slice, key_color) catch {
-                destroyEntryTextures(entries[0..idx]);
-                self.allocator.free(entries);
-                c.SDL_DestroyTexture(title_tex.tex);
-                self.allocator.destroy(cache);
-                return null;
-            };
-
             const path_slice = if (idx == 0) new_worktree_label else self.worktrees.items[idx - 1].display;
-            const max_path_width = overlay_width - (2 * padding) - key_tex.w - hotkey_spacing - trailing_gutter;
+            const max_path_width = overlay_width - (2 * padding) - trailing_gutter;
 
             var path_buf: [256]u8 = undefined;
             const truncated_path = truncateTextLeft(path_slice, entry_fonts.regular, max_path_width, &path_buf) catch |err| blk: {
@@ -738,14 +684,13 @@ pub const WorktreeOverlayComponent = struct {
                 break :blk path_slice;
             };
             const path_tex = makeTextTexture(renderer, entry_fonts.regular, truncated_path, entry_color) catch {
-                c.SDL_DestroyTexture(key_tex.tex);
                 destroyEntryTextures(entries[0..idx]);
                 self.allocator.free(entries);
                 c.SDL_DestroyTexture(title_tex.tex);
                 self.allocator.destroy(cache);
                 return null;
             };
-            entries[idx] = .{ .hotkey = key_tex, .path = path_tex };
+            entries[idx] = .{ .path = path_tex };
         }
 
         cache.* = .{
@@ -755,7 +700,6 @@ pub const WorktreeOverlayComponent = struct {
             .title = title_tex,
             .entries = entries,
             .theme_fg = fg,
-            .key_color = key_color,
             .title_color = title_color,
             .entry_color = entry_color,
             .font_generation = cache_store.generation,
@@ -969,7 +913,6 @@ pub const WorktreeOverlayComponent = struct {
 
     fn destroyEntryTextures(entries: []EntryTex) void {
         for (entries) |entry| {
-            c.SDL_DestroyTexture(entry.hotkey.tex);
             c.SDL_DestroyTexture(entry.path.tex);
         }
     }

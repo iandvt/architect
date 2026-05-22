@@ -122,10 +122,15 @@ pub fn build(b: *std.Build) void {
 
     const run_exe_unit_tests = b.addRunArtifact(exe_unit_tests);
     const run_mcp_unit_tests = b.addRunArtifact(mcp_unit_tests);
+    const run_sdk_workaround_test = b.addSystemCommand(&.{
+        "bash",
+        "scripts/test-macos-sdk-workaround.sh",
+    });
 
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_exe_unit_tests.step);
     test_step.dependOn(&run_mcp_unit_tests.step);
+    test_step.dependOn(&run_sdk_workaround_test.step);
 
     // Lint step using zwanzig
     if (b.lazyDependency("zwanzig", .{
