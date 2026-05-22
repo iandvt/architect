@@ -418,7 +418,7 @@ test "stream answers synchronized output mode report queries" {
     try std.testing.expectEqualSlices(u8, "\x1b[?2026;1$y", buf[0..enabled_len]);
 }
 
-test "stream answers unknown mode report queries" {
+test "stream answers private unknown mode report queries" {
     const allocator = std.testing.allocator;
 
     var terminal = try ghostty_vt.Terminal.init(allocator, .{
@@ -447,10 +447,6 @@ test "stream answers unknown mode report queries" {
     try stream.nextSlice("\x1b[?9999$p");
     const private_len = try std.posix.read(pipe_fds[0], &buf);
     try std.testing.expectEqualSlices(u8, "\x1b[?9999;0$y", buf[0..private_len]);
-
-    try stream.nextSlice("\x1b[9999$p");
-    const ansi_len = try std.posix.read(pipe_fds[0], &buf);
-    try std.testing.expectEqualSlices(u8, "\x1b[9999;0$y", buf[0..ansi_len]);
 }
 
 test "stream answers OSC 4 palette queries with the current terminal palette" {

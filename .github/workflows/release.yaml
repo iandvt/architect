@@ -72,9 +72,10 @@ jobs:
       - name: Bundle libraries and package
         run: |
           chmod +x scripts/bundle-macos.sh
-          ./scripts/bundle-macos.sh zig-out/bin/architect release zig-out/bin/architect-mcp
+          ./scripts/bundle-macos.sh zig-out/bin/architect release --app-name "Architect (Stable)"
+          ./scripts/bundle-macos.sh zig-out/bin/architect release --app-name "Architect (Scratch)"
           cd release
-          tar -czf architect-macos-${{ matrix.arch }}.tar.gz Architect.app
+          tar -czf architect-macos-${{ matrix.arch }}.tar.gz "Architect (Stable).app" "Architect (Scratch).app"
         working-directory: architect
 
       - name: Upload artifact

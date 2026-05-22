@@ -15,10 +15,11 @@
 just setup            # fresh worktree bootstrap
 nix develop           # or: direnv allow
 zig build
-zig build run
+just run              # Dev instance; equivalent to `zig build run -- --instance Dev`
 zig build test
 just lint
 zig fmt --check src/
+make apps stable scratch # rebuild and launch app bundles before UI validation
 ```
 
 Prerequisites: macOS, Nix with flakes enabled, or direnv with nix-direnv. Zig build covers type checking.
@@ -64,13 +65,13 @@ Read these before making any changes:
 
 ### What requires developer assistance
 
-- SDL3 window/rendering — developer must describe visual state or provide a screenshot
+- SDL3 window/rendering — before asking the developer to validate UI or app-bundle behavior, rebuild and rebundle the app they will consume, launch that exact bundle when practical, and state the path or command used; developer then describes visual state or provides a screenshot
 - Terminal emulation behavior — developer provides screen recordings or descriptions
 
 ### Debug mode
 
 - `zig build -Doptimize=Debug` for debug builds (default)
-- Add `std.log` calls at the relevant site; logs appear on stderr during `zig build run`
+- Add `std.log` calls at the relevant site; logs appear on stderr during `zig build run -- --instance Dev` or `just run`
 
 ## Coding Conventions
 
@@ -191,7 +192,7 @@ The `<= len` pattern is only correct when `pos` represents a position *after* pr
 ## Claude Socket Hook
 - The app creates `${XDG_RUNTIME_DIR:-/tmp}/architect_notify_<pid>.sock` and sets `ARCHITECT_SESSION_ID`/`ARCHITECT_NOTIFY_SOCK` for each shell.
 - Send a single JSON line to signal UI states: `{"session":N,"state":"start"|"awaiting_approval"|"done"}`. The helper `scripts/architect_notify.py` is available if needed.
-- Story notifications use the same socket: `{"session":N,"type":"story","path":"/absolute/path/to/story.md"}`. The `architect story <file>` subcommand sends this automatically.
+- Story notifications use the same socket: `{"session":N,"type":"story","path":"/absolute/path/to/story.md"}`. The injected shell helper's `architect story <file>` subcommand sends this automatically.
 
 ## Done? Share
 - Provide a concise summary of edits, test/build outcomes, and documentation updates.

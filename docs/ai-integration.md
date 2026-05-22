@@ -2,7 +2,7 @@
 
 Architect exposes a Unix domain socket to let external tools (Claude Code, Codex, Gemini CLI, etc.) signal UI states.
 
-Architect also ships `architect-mcp`, a separate stdio MCP helper that lets local MCP clients ask the running app to create new terminal sessions.
+Architect also builds `architect-mcp`, a separate stdio MCP helper that lets local MCP clients ask the running app to create new terminal sessions. Release app bundles omit the helper by default.
 
 ## Socket Protocol
 
@@ -26,8 +26,8 @@ The running app writes a per-instance discovery file named `architect_control_<u
 Helper paths:
 
 - Source builds: `zig-out/bin/architect-mcp`
-- Release app bundle: `Architect.app/Contents/MacOS/architect-mcp`
-- Homebrew: `architect-mcp` on `PATH`, with the app-bundle path under `$(brew --prefix)/Cellar/architect/<version>/Architect.app/Contents/MacOS/architect-mcp` as a fallback
+- Release app bundle: omitted unless the bundle is built with `scripts/bundle-macos.sh --with-mcp <path>`
+- Homebrew: `architect-mcp` on `PATH`
 
 Input schema:
 
@@ -83,8 +83,8 @@ Tool errors use stable codes:
 
 ## Built-in Command (inside Architect terminals)
 
-Architect injects a small `architect` command into each shell's `PATH`. It reads the
-session id and socket path from the environment, so hooks can simply call:
+Architect injects a small `architect` helper command into each shell's `PATH`. It reads the
+session id and socket path from the environment, so hooks inside Architect terminals can simply call:
 
 ```bash
 architect notify start
@@ -96,6 +96,10 @@ On macOS zsh login shells, `/etc/zprofile` resets `PATH` via `path_helper`. Arch
 adds wrapper files at `~/.cache/architect/zsh/.zshenv`, `.zprofile`, `.zshrc`, and `.zlogin`
 that source your original dotfiles, prepend the Architect command directory, and install
 a small guard so `PATH` keeps the Architect entry after directory changes.
+
+The GUI app binary named `architect` is separate from this injected helper. Direct binary launches accept
+app flags such as `--instance` and `--session`; helper subcommands such as `notify`, `hook`, and `story`
+are available only when Architect has injected its helper directory at the front of `PATH`.
 
 If your hook runs outside an Architect terminal, use the Python helper scripts below.
 Replace `architect notify ...` in the examples with `python3 ~/.<tool>/architect_notify.py ...` when using those scripts.

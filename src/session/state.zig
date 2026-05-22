@@ -119,8 +119,8 @@ pub const SessionState = struct {
     agent_kind: ?AgentKind = null,
     /// Agent session UUID extracted from terminal output at quit time. Owned; freed in deinit.
     agent_session_id: ?[]const u8 = null,
-    /// True only when agent_kind/agent_session_id were captured during the current run's quit flow.
-    /// Restored metadata is used for startup resume injection, but must not be re-persisted as fresh data.
+    /// True when agent_kind/agent_session_id should be persisted for this named session.
+    /// Set for metadata captured during quit and for restored metadata kept for manual resume.
     agent_metadata_captured: bool = false,
     /// Raw PTY output captured after quit teardown starts. Used to avoid extracting
     /// stale UUIDs from earlier scrollback.

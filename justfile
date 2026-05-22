@@ -17,11 +17,11 @@ build:
 test:
     zig build test
 
-run:
-    zig build run
+run instance="Dev":
+    zig build run -- --instance "{{instance}}"
 
-run-release:
-    zig build run -Doptimize=ReleaseFast
+run-release instance="Dev":
+    zig build run -Doptimize=ReleaseFast -- --instance "{{instance}}"
 
 lint:
     #!/usr/bin/env bash
