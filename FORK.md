@@ -49,15 +49,22 @@ inspect, rebase, cherry-pick, or drop while that policy is still open.
 
 ## Validation
 
-Before asking for visual validation or committing this fork base, rebuild the app
-bundles and exercise both channels:
+Before asking for visual validation or committing this fork base, rebuild and
+publish the app bundle from the matching branch, then exercise the installed
+channel:
 
 ```bash
-make apps
+git switch main
+make publish-apps
 make stable
-make scratch
-make sessions
 make stable SESSION=<SessionId>
+
+git switch scratch
+make publish-apps
+make scratch
+make scratch SESSION=<SessionId>
+
+make sessions
 ```
 
 Confirm that Stable and Scratch create separate directories under

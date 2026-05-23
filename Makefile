@@ -31,7 +31,7 @@ endif
 
 .DEFAULT_GOAL := help
 
-.PHONY: help apps current-app publish-apps publish-current-app dock-icons stable scratch stable-new scratch-new stable-restore scratch-restore sessions check-stable-app check-scratch-app check-installed-apps require-channel-branch require-session
+.PHONY: help apps current-app publish-apps publish-current-app dock-icons stable scratch stable-new scratch-new stable-restore scratch-restore sessions check-installed-stable-app check-installed-scratch-app check-installed-apps require-channel-branch require-session
 
 help:
 	@printf '%s\n' \
@@ -66,11 +66,16 @@ publish-current-app: current-app
 		"$(LSREGISTER)" -f "$(CURRENT_INSTALLED_APP)"; \
 	fi
 
-dock-icons: check-installed-apps
+dock-icons:
 	@plist="$$HOME/Library/Preferences/com.apple.dock.plist"; \
 	if [ "$$(uname -s)" != "Darwin" ]; then \
 		printf 'Dock refresh is only supported on macOS\n'; \
 		exit 0; \
+	fi; \
+	if [ ! -d "$(INSTALLED_STABLE_APP)" ] && [ ! -d "$(INSTALLED_SCRATCH_APP)" ]; then \
+		printf 'No installed Architect app bundles found under %s\n' "$(APPLICATIONS_DIR)" >&2; \
+		printf 'Install Stable from main or Scratch from scratch with: make publish-apps\n' >&2; \
+		exit 1; \
 	fi; \
 	if [ ! -f "$$plist" ]; then \
 		defaults write com.apple.dock persistent-apps -array; \
@@ -91,11 +96,15 @@ dock-icons: check-installed-apps
 		fi; \
 		i=$$((i + 1)); \
 	done
-	defaults write com.apple.dock persistent-apps -array-add '<dict><key>tile-data</key><dict><key>file-data</key><dict><key>_CFURLString</key><string>file:///Applications/Architect%20(Stable).app/</string><key>_CFURLStringType</key><integer>15</integer></dict><key>file-label</key><string>Architect (Stable)</string><key>file-type</key><integer>41</integer></dict><key>tile-type</key><string>file-tile</string></dict>'
-	defaults write com.apple.dock persistent-apps -array-add '<dict><key>tile-data</key><dict><key>file-data</key><dict><key>_CFURLString</key><string>file:///Applications/Architect%20(Scratch).app/</string><key>_CFURLStringType</key><integer>15</integer></dict><key>file-label</key><string>Architect (Scratch)</string><key>file-type</key><integer>41</integer></dict><key>tile-type</key><string>file-tile</string></dict>'
+	if [ -d "$(INSTALLED_STABLE_APP)" ]; then \
+		defaults write com.apple.dock persistent-apps -array-add '<dict><key>tile-data</key><dict><key>file-data</key><dict><key>_CFURLString</key><string>file:///Applications/Architect%20(Stable).app/</string><key>_CFURLStringType</key><integer>15</integer></dict><key>file-label</key><string>Architect (Stable)</string><key>file-type</key><integer>41</integer></dict><key>tile-type</key><string>file-tile</string></dict>'; \
+	fi; \
+	if [ -d "$(INSTALLED_SCRATCH_APP)" ]; then \
+		defaults write com.apple.dock persistent-apps -array-add '<dict><key>tile-data</key><dict><key>file-data</key><dict><key>_CFURLString</key><string>file:///Applications/Architect%20(Scratch).app/</string><key>_CFURLStringType</key><integer>15</integer></dict><key>file-label</key><string>Architect (Scratch)</string><key>file-type</key><integer>41</integer></dict><key>tile-type</key><string>file-tile</string></dict>'; \
+	fi; \
 	killall Dock >/dev/null 2>&1 || true
 
-stable: check-installed-apps
+stable: check-installed-stable-app
 	@if [ -n "$(SESSION)" ]; then \
 		printf 'Restoring Stable session: %s\n' "$(SESSION)"; \
 		$(OPEN) -n "$(INSTALLED_STABLE_APP)" --args --session "$(SESSION)"; \
@@ -104,7 +113,7 @@ stable: check-installed-apps
 		$(OPEN) -n "$(INSTALLED_STABLE_APP)"; \
 	fi
 
-scratch: check-installed-apps
+scratch: check-installed-scratch-app
 	@if [ -n "$(SESSION)" ]; then \
 		printf 'Restoring Scratch session: %s\n' "$(SESSION)"; \
 		$(OPEN) -n "$(INSTALLED_SCRATCH_APP)" --args --session "$(SESSION)"; \
@@ -113,16 +122,16 @@ scratch: check-installed-apps
 		$(OPEN) -n "$(INSTALLED_SCRATCH_APP)"; \
 	fi
 
-stable-new: check-installed-apps
+stable-new: check-installed-stable-app
 	$(OPEN) -n "$(INSTALLED_STABLE_APP)"
 
-scratch-new: check-installed-apps
+scratch-new: check-installed-scratch-app
 	$(OPEN) -n "$(INSTALLED_SCRATCH_APP)"
 
-stable-restore: require-session check-installed-apps
+stable-restore: require-session check-installed-stable-app
 	$(OPEN) -n "$(INSTALLED_STABLE_APP)" --args --session "$(SESSION)"
 
-scratch-restore: require-session check-installed-apps
+scratch-restore: require-session check-installed-scratch-app
 	$(OPEN) -n "$(INSTALLED_SCRATCH_APP)" --args --session "$(SESSION)"
 
 sessions:
@@ -155,17 +164,17 @@ require-session:
 		exit 1; \
 	fi
 
-check-stable-app:
-	@if [ ! -d "$(STABLE_APP)" ]; then \
-		printf 'Missing app bundle: %s\n' "$(STABLE_APP)" >&2; \
-		printf 'Build local app bundles with: make apps\n' >&2; \
+check-installed-stable-app:
+	@if [ ! -d "$(INSTALLED_STABLE_APP)" ]; then \
+		printf 'Missing installed Stable app bundle: %s\n' "$(INSTALLED_STABLE_APP)" >&2; \
+		printf 'Install Stable from main with: make publish-apps\n' >&2; \
 		exit 1; \
 	fi
 
-check-scratch-app:
-	@if [ ! -d "$(SCRATCH_APP)" ]; then \
-		printf 'Missing app bundle: %s\n' "$(SCRATCH_APP)" >&2; \
-		printf 'Build local app bundles with: make apps\n' >&2; \
+check-installed-scratch-app:
+	@if [ ! -d "$(INSTALLED_SCRATCH_APP)" ]; then \
+		printf 'Missing installed Scratch app bundle: %s\n' "$(INSTALLED_SCRATCH_APP)" >&2; \
+		printf 'Install Scratch from scratch with: make publish-apps\n' >&2; \
 		exit 1; \
 	fi
 
