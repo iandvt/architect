@@ -44,6 +44,13 @@ pub fn gridViewShortcut(key: c.SDL_Keycode, mod: c.SDL_Keymod) bool {
     return key == c.SDLK_G;
 }
 
+pub fn readerOverlayShortcut(key: c.SDL_Keycode, mod: c.SDL_Keymod) bool {
+    if ((mod & c.SDL_KMOD_GUI) == 0) return false;
+    if ((mod & c.SDL_KMOD_SHIFT) == 0) return false;
+    if ((mod & (c.SDL_KMOD_CTRL | c.SDL_KMOD_ALT)) != 0) return false;
+    return key == c.SDLK_R;
+}
+
 pub fn gridSelectShortcut(key: c.SDL_Keycode, mod: c.SDL_Keymod) bool {
     if ((mod & (c.SDL_KMOD_GUI | c.SDL_KMOD_SHIFT | c.SDL_KMOD_CTRL | c.SDL_KMOD_ALT)) != 0) return false;
     return key == c.SDLK_RETURN;
@@ -424,6 +431,14 @@ test "gridViewShortcut recognizes plain command G" {
     try std.testing.expect(!gridViewShortcut(c.SDLK_G, 0));
     try std.testing.expect(!gridViewShortcut(c.SDLK_G, c.SDL_KMOD_GUI | c.SDL_KMOD_SHIFT));
     try std.testing.expect(!gridViewShortcut(c.SDLK_G, c.SDL_KMOD_GUI | c.SDL_KMOD_ALT));
+}
+
+test "reader overlay shortcut uses command shift R" {
+    try std.testing.expect(!readerOverlayShortcut(c.SDLK_R, c.SDL_KMOD_GUI));
+    try std.testing.expect(!readerOverlayShortcut(c.SDLK_R, c.SDL_KMOD_GUI | c.SDL_KMOD_CTRL));
+    try std.testing.expect(readerOverlayShortcut(c.SDLK_R, c.SDL_KMOD_GUI | c.SDL_KMOD_SHIFT));
+    try std.testing.expect(!readerOverlayShortcut(c.SDLK_R, c.SDL_KMOD_GUI | c.SDL_KMOD_SHIFT | c.SDL_KMOD_ALT));
+    try std.testing.expect(!readerOverlayShortcut(c.SDLK_G, c.SDL_KMOD_GUI | c.SDL_KMOD_SHIFT));
 }
 
 test "plainGridNavShortcut recognizes unmodified arrows only" {

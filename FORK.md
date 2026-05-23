@@ -77,7 +77,7 @@ Remaining global shortcuts:
 - `Cmd+N`: create a terminal after the current one.
 - `Cmd+W`: close a terminal, or restart the only terminal.
 - `Cmd+Q`: quit.
-- `Cmd+R`: reader mode.
+- `Cmd+Shift+R`: reader mode.
 - `Cmd+/`: help.
 - `Cmd+,`: open config.
 - `Cmd+C` / `Cmd+V`: copy and paste.
@@ -91,6 +91,7 @@ Removed or intentionally hidden:
 - `Cmd+1` through `Cmd+0`. Slot jumps are not needed here.
 - `Cmd+T`. Worktrunk commands such as `wt switch` and `wtc` cover this workflow.
 - `Cmd+O`. Recent folder launching is not a primary fork workflow.
+- `Cmd+R`. Reader mode uses `Cmd+Shift+R` to avoid the common refresh binding.
 - `Cmd+D`. The diff overlay can still exist, but no global launch hotkey.
 
 ## MCP Helper
