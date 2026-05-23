@@ -51,9 +51,8 @@ pub fn readerOverlayShortcut(key: c.SDL_Keycode, mod: c.SDL_Keymod) bool {
 }
 
 pub fn gridSelectShortcut(key: c.SDL_Keycode, mod: c.SDL_Keymod) bool {
-    _ = key;
-    _ = mod;
-    return false;
+    if ((mod & (c.SDL_KMOD_GUI | c.SDL_KMOD_SHIFT | c.SDL_KMOD_CTRL | c.SDL_KMOD_ALT)) != 0) return false;
+    return key == c.SDLK_RETURN;
 }
 
 pub fn gridExpandShortcut(key: c.SDL_Keycode, mod: c.SDL_Keymod, mode: app_state.ViewMode) bool {
@@ -453,8 +452,8 @@ test "plainGridNavShortcut recognizes unmodified arrows only" {
     try std.testing.expect(plainGridNavShortcut(c.SDLK_RETURN, 0) == null);
 }
 
-test "gridSelectShortcut is not assigned after command return removal" {
-    try std.testing.expect(!gridSelectShortcut(c.SDLK_RETURN, 0));
+test "gridSelectShortcut recognizes unmodified return only" {
+    try std.testing.expect(gridSelectShortcut(c.SDLK_RETURN, 0));
     try std.testing.expect(!gridSelectShortcut(c.SDLK_RETURN, c.SDL_KMOD_GUI));
     try std.testing.expect(!gridSelectShortcut(c.SDLK_RETURN, c.SDL_KMOD_SHIFT));
     try std.testing.expect(!gridSelectShortcut(c.SDLK_RETURN, c.SDL_KMOD_CTRL));
@@ -462,8 +461,8 @@ test "gridSelectShortcut is not assigned after command return removal" {
     try std.testing.expect(!gridSelectShortcut(c.SDLK_G, 0));
 }
 
-test "gridExpandShortcut is not assigned after command return removal" {
-    try std.testing.expect(!gridExpandShortcut(c.SDLK_RETURN, 0, .Grid));
+test "gridExpandShortcut only expands grid with unmodified return" {
+    try std.testing.expect(gridExpandShortcut(c.SDLK_RETURN, 0, .Grid));
     try std.testing.expect(!gridExpandShortcut(c.SDLK_RETURN, c.SDL_KMOD_GUI, .Grid));
     try std.testing.expect(!gridExpandShortcut(c.SDLK_RETURN, c.SDL_KMOD_GUI, .Full));
 }
