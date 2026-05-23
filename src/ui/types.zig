@@ -63,6 +63,7 @@ pub const UiAction = union(enum) {
     ToggleReaderOverlay: void,
     ToggleCommandOverlay: void,
     CommandOverlayKey: CommandOverlayKeyAction,
+    CommandOverlayPaste: void,
     CommandOverlayTextInput: []const u8,
     SendDiffComments: SendDiffCommentsAction,
     OpenStory: OpenStoryAction,

@@ -1,4 +1,5 @@
 const std = @import("std");
+const ghostty_vt = @import("ghostty-vt");
 const c = @import("../../c.zig");
 const colors = @import("../../colors.zig");
 const command_overlay_mod = @import("../../app/command_overlay.zig");
@@ -87,6 +88,15 @@ pub const CommandOverlayComponent = struct {
                     return true;
                 }
 
+                const has_gui = (mod & c.SDL_KMOD_GUI) != 0;
+                const has_blocking = (mod & (c.SDL_KMOD_CTRL | c.SDL_KMOD_ALT)) != 0;
+                if (key == c.SDLK_V and has_gui and !has_blocking) {
+                    actions.append(.CommandOverlayPaste) catch |err| {
+                        log.warn("failed to queue command overlay paste action: {}", .{err});
+                    };
+                    return true;
+                }
+
                 if (!input_keys.isModifierKey(key)) {
                     actions.append(.{ .CommandOverlayKey = .{ .key = key, .mod = mod } }) catch |err| {
                         log.warn("failed to queue command overlay key input: {}", .{err});
@@ -124,7 +134,15 @@ pub const CommandOverlayComponent = struct {
                 self.overlay.updateCloseHover(mouse_x, mouse_y, host);
                 return true;
             },
-            c.SDL_EVENT_KEY_UP, c.SDL_EVENT_TEXT_EDITING, c.SDL_EVENT_MOUSE_BUTTON_UP, c.SDL_EVENT_MOUSE_WHEEL => return true,
+            c.SDL_EVENT_MOUSE_WHEEL => {
+                const wheel_ticks: isize = if (event.wheel.integer_y != 0)
+                    @as(isize, @intCast(event.wheel.integer_y))
+                else
+                    @as(isize, @intFromFloat(event.wheel.y));
+                self.command_overlays.scrollActive(-wheel_ticks, host.now_ms);
+                return true;
+            },
+            c.SDL_EVENT_KEY_UP, c.SDL_EVENT_TEXT_EDITING, c.SDL_EVENT_MOUSE_BUTTON_UP => return true,
             else => return false,
         }
     }
@@ -222,6 +240,15 @@ fn keyDownEvent(key: c.SDL_Keycode, mod: c.SDL_Keymod) c.SDL_Event {
     return event;
 }
 
+fn mouseWheelEvent(y: f32, integer_y: i32) c.SDL_Event {
+    var event: c.SDL_Event = undefined;
+    @memset(std.mem.asBytes(&event), 0);
+    event.type = c.SDL_EVENT_MOUSE_WHEEL;
+    event.wheel.y = y;
+    event.wheel.integer_y = integer_y;
+    return event;
+}
+
 test "escape closes remote terminal overlay instead of sending terminal input" {
     var theme = colors.Theme.default();
     var remote_terminals = try command_overlay_mod.CommandOverlaySet.init(std.testing.allocator, 1, "/bin/sh", .{}, "", theme);
@@ -247,6 +274,67 @@ test "escape closes remote terminal overlay instead of sending terminal input" {
         .ToggleCommandOverlay => {},
         else => return error.TestUnexpectedResult,
     }
+    try std.testing.expect(actions.pop() == null);
+}
+
+test "command-v queues remote terminal paste instead of terminal key input" {
+    var theme = colors.Theme.default();
+    var remote_terminals = try command_overlay_mod.CommandOverlaySet.init(std.testing.allocator, 1, "/bin/sh", .{}, "", theme);
+    defer remote_terminals.deinit();
+    remote_terminals.active_index = 0;
+
+    var component = CommandOverlayComponent{
+        .allocator = std.testing.allocator,
+        .command_overlays = &remote_terminals,
+    };
+    component.overlay.visible = true;
+    component.overlay.animation_state = .open;
+
+    const host = testHost(&theme);
+    var actions = types.UiActionQueue.init(std.testing.allocator);
+    defer actions.deinit();
+    var event = keyDownEvent(c.SDLK_V, c.SDL_KMOD_GUI);
+
+    const ui_component = component.asComponent();
+    try std.testing.expect(ui_component.vtable.handleEvent.?(ui_component.ptr, &host, &event, &actions));
+    const action = actions.pop() orelse return error.TestExpectedNonNull;
+    switch (action) {
+        .CommandOverlayPaste => {},
+        else => return error.TestUnexpectedResult,
+    }
+    try std.testing.expect(actions.pop() == null);
+}
+
+test "mouse wheel scrolls the remote terminal overlay" {
+    var theme = colors.Theme.default();
+    var remote_terminals = try command_overlay_mod.CommandOverlaySet.init(std.testing.allocator, 1, "/bin/sh", .{}, "", theme);
+    defer remote_terminals.deinit();
+    remote_terminals.active_index = 0;
+    remote_terminals.overlays[0].session.spawned = true;
+    remote_terminals.overlays[0].session.render_epoch = 1;
+    remote_terminals.overlays[0].session.terminal = try ghostty_vt.Terminal.init(std.testing.allocator, .{
+        .cols = 10,
+        .rows = 3,
+        .max_scrollback = 5,
+    });
+
+    var component = CommandOverlayComponent{
+        .allocator = std.testing.allocator,
+        .command_overlays = &remote_terminals,
+    };
+    component.overlay.visible = true;
+    component.overlay.animation_state = .open;
+
+    var host = testHost(&theme);
+    host.now_ms = 1234;
+    var actions = types.UiActionQueue.init(std.testing.allocator);
+    defer actions.deinit();
+    var event = mouseWheelEvent(1.0, 1);
+
+    const ui_component = component.asComponent();
+    try std.testing.expect(ui_component.vtable.handleEvent.?(ui_component.ptr, &host, &event, &actions));
+    try std.testing.expectEqual(@as(i64, 1234), remote_terminals.overlays[0].view.last_scroll_time);
+    try std.testing.expectEqual(@as(u64, 2), remote_terminals.overlays[0].session.render_epoch);
     try std.testing.expect(actions.pop() == null);
 }
 
