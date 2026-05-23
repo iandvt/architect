@@ -77,7 +77,6 @@ Remaining global shortcuts:
 - `Cmd+N`: create a terminal after the current one.
 - `Cmd+W`: close a terminal, or restart the only terminal.
 - `Cmd+Q`: quit.
-- `Cmd+R`: reader mode.
 - `Cmd+/`: help.
 - `Cmd+,`: open config.
 - `Cmd+C` / `Cmd+V`: copy and paste.

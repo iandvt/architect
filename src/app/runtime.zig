@@ -2739,7 +2739,6 @@ pub fn run(options: RunOptions) !void {
                 switch (reader_overlay_component.toggle(&host_snapshot, now)) {
                     .opened => {
                         ui.showToast("Reader Mode", now);
-                        if (config.ui.show_hotkey_feedback) ui.showHotkey("⌘R", now);
                     },
                     .closed => {},
                     .unavailable => ui.showToast("Reader mode requires a selected running terminal", now),
