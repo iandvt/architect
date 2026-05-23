@@ -57,7 +57,7 @@ pub fn gridExpandShortcut(key: c.SDL_Keycode, mod: c.SDL_Keymod, mode: app_state
 }
 
 pub fn commandGridNavShortcut(key: c.SDL_Keycode, mod: c.SDL_Keymod, mode: app_state.ViewMode) ?GridNavDirection {
-    if (mode != .Grid and mode != .Full) return null;
+    if (mode != .Full) return null;
     return gridNavShortcut(key, mod);
 }
 
@@ -490,9 +490,9 @@ test "gridExpandShortcut is not assigned after command return removal" {
     try std.testing.expect(!gridExpandShortcut(c.SDLK_RETURN, c.SDL_KMOD_GUI, .Full));
 }
 
-test "commandGridNavShortcut works in grid and full view" {
+test "commandGridNavShortcut is full-view only" {
     try std.testing.expectEqual(GridNavDirection.left, commandGridNavShortcut(c.SDLK_LEFT, c.SDL_KMOD_GUI, .Full).?);
-    try std.testing.expectEqual(GridNavDirection.left, commandGridNavShortcut(c.SDLK_LEFT, c.SDL_KMOD_GUI, .Grid).?);
+    try std.testing.expect(commandGridNavShortcut(c.SDLK_LEFT, c.SDL_KMOD_GUI, .Grid) == null);
     try std.testing.expect(commandGridNavShortcut(c.SDLK_LEFT, 0, .Full) == null);
     try std.testing.expect(commandGridNavShortcut(c.SDLK_LEFT, c.SDL_KMOD_GUI | c.SDL_KMOD_ALT, .Full) == null);
     try std.testing.expect(commandGridNavShortcut(c.SDLK_LEFT, c.SDL_KMOD_GUI | c.SDL_KMOD_CTRL, .Full) == null);
