@@ -28,9 +28,14 @@ pub fn gridNavShortcut(key: c.SDL_Keycode, mod: c.SDL_Keymod) ?GridNavDirection 
 }
 
 pub fn plainGridNavShortcut(key: c.SDL_Keycode, mod: c.SDL_Keymod) ?GridNavDirection {
-    _ = key;
-    _ = mod;
-    return null;
+    if ((mod & (c.SDL_KMOD_GUI | c.SDL_KMOD_SHIFT | c.SDL_KMOD_CTRL | c.SDL_KMOD_ALT)) != 0) return null;
+    return switch (key) {
+        c.SDLK_UP => .up,
+        c.SDLK_DOWN => .down,
+        c.SDLK_LEFT => .left,
+        c.SDLK_RIGHT => .right,
+        else => null,
+    };
 }
 
 pub fn gridViewShortcut(key: c.SDL_Keycode, mod: c.SDL_Keymod) bool {
@@ -436,11 +441,11 @@ test "reader overlay shortcut is not assigned after command R removal" {
     try std.testing.expect(!readerOverlayShortcut(c.SDLK_G, c.SDL_KMOD_GUI | c.SDL_KMOD_SHIFT));
 }
 
-test "plainGridNavShortcut is not assigned yet" {
-    try std.testing.expect(plainGridNavShortcut(c.SDLK_UP, 0) == null);
-    try std.testing.expect(plainGridNavShortcut(c.SDLK_DOWN, 0) == null);
-    try std.testing.expect(plainGridNavShortcut(c.SDLK_LEFT, 0) == null);
-    try std.testing.expect(plainGridNavShortcut(c.SDLK_RIGHT, 0) == null);
+test "plainGridNavShortcut recognizes unmodified arrows only" {
+    try std.testing.expectEqual(GridNavDirection.up, plainGridNavShortcut(c.SDLK_UP, 0).?);
+    try std.testing.expectEqual(GridNavDirection.down, plainGridNavShortcut(c.SDLK_DOWN, 0).?);
+    try std.testing.expectEqual(GridNavDirection.left, plainGridNavShortcut(c.SDLK_LEFT, 0).?);
+    try std.testing.expectEqual(GridNavDirection.right, plainGridNavShortcut(c.SDLK_RIGHT, 0).?);
     try std.testing.expect(plainGridNavShortcut(c.SDLK_UP, c.SDL_KMOD_GUI) == null);
     try std.testing.expect(plainGridNavShortcut(c.SDLK_DOWN, c.SDL_KMOD_SHIFT) == null);
     try std.testing.expect(plainGridNavShortcut(c.SDLK_LEFT, c.SDL_KMOD_CTRL) == null);

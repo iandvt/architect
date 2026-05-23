@@ -14,6 +14,7 @@ const shortcuts = [_]Shortcut{
     .{ .key = "Click terminal", .desc = "Expand to full screen" },
     .{ .key = "ESC (hold)", .desc = "Collapse to grid view" },
     .{ .key = "⌘G", .desc = "Toggle grid/full view" },
+    .{ .key = "↑/↓/←/→", .desc = "Move focus in grid" },
     .{ .key = "⌘↑/↓/←/→", .desc = "Move between slots" },
     .{ .key = "⌘T", .desc = "Open worktree picker" },
     .{ .key = "⌘?", .desc = "Open help" },
