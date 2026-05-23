@@ -19,7 +19,7 @@ just run              # Dev instance; equivalent to `zig build run -- --instance
 zig build test
 just lint
 zig fmt --check src/
-make apps stable scratch # rebuild and launch app bundles before UI validation
+make publish-apps # branch-aware app publish: main -> Stable, scratch -> Scratch
 ```
 
 Prerequisites: macOS, Nix with flakes enabled, or direnv with nix-direnv. Zig build covers type checking.
@@ -65,7 +65,7 @@ Read these before making any changes:
 
 ### What requires developer assistance
 
-- SDL3 window/rendering — before asking the developer to validate UI or app-bundle behavior, rebuild and rebundle the app they will consume, launch that exact bundle when practical, and state the path or command used; developer then describes visual state or provides a screenshot
+- SDL3 window/rendering — before asking the developer to validate UI or app-bundle behavior, run `make publish-apps` from the correct worktree only: `main` publishes Stable and `scratch` publishes Scratch. Never build Stable from `scratch` or Scratch from `main`. Launch the `/Applications` bundle when practical and state the path or command used; developer then describes visual state or provides a screenshot
 - Terminal emulation behavior — developer provides screen recordings or descriptions
 
 ### Debug mode
