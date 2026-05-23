@@ -78,7 +78,6 @@ as any shortcut behavior change.
 
 Current global shortcuts:
 
-- `Cmd+Return` in grid: expand the active tile.
 - `Cmd+Arrow`: move between slots in grid or full view.
 - `Cmd+1` through `Cmd+0`: jump to a grid slot.
 - `Cmd+K`: clear the focused terminal.
@@ -93,6 +92,10 @@ Current global shortcuts:
 - `Cmd+,`: open config.
 - `Cmd+C` / `Cmd+V`: copy and paste.
 - `Cmd+Shift++` / `Cmd+-`: font size.
+
+Retired shortcuts:
+
+- `Cmd+Return` in grid. Grid expansion will get a simpler replacement.
 
 ## MCP Helper
 
