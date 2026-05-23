@@ -79,7 +79,6 @@ as any shortcut behavior change.
 Current global shortcuts:
 
 - `Cmd+Arrow`: move between slots in full view.
-- `Cmd+1` through `Cmd+0`: jump to a grid slot.
 - `Cmd+K`: clear the focused terminal.
 - `Cmd+T`: open the worktree picker.
 - `Cmd+O`: open recent folders.
@@ -97,6 +96,7 @@ Retired shortcuts:
 
 - `Cmd+Return` in grid. Grid expansion will get a simpler replacement.
 - `Cmd+Arrow` in grid. Plain arrows will own grid movement.
+- `Cmd+1` through `Cmd+0`. Slot jumps are not needed here.
 
 ## MCP Helper
 
