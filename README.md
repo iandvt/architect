@@ -34,8 +34,7 @@ Architect solves this with a grid view that keeps all your agents visible, with 
 - **Grid view** — keep all agents visible simultaneously, expand any one to full screen
 - **Story viewer** — inside an Architect terminal, run `architect story <filename>` to open a scrollable overlay that renders PR story files with prose text and diff-colored code blocks
 - **MCP session spawning** — run `architect-mcp` from an MCP client to ask the running Architect app to create a terminal session in a requested working directory
-- **Reader mode** — open a centered markdown reader for the selected terminal's history (works in full view and grid) with live updates, bottom pinning, incremental search (⌘F, Enter/Shift+Enter), markdown tables with inline cell styling (bold/italic/code/links/strikethrough), task checkboxes (emoji), clickable links, shared draggable scrollbar, and left-to-right gradient separators before command prompts (OSC 133 + fallback heuristics)
-- **Remote terminal** (⌘T) — open or hide a persistent terminal overlay for the focused grid slot's working directory; each grid slot keeps its own helper shell without consuming a grid slot
+- **Remote terminal** (⌘T) — open or hide a persistent terminal overlay for the focused grid slot's working directory; each grid slot keeps its own helper shell and wheel-scrollable scrollback without consuming a grid slot, and helper processes participate in quit safety prompts
 
 ### Terminal Essentials
 - Smooth animated transitions for grid expansion, contraction, and reflow (cells and borders move/resize together)

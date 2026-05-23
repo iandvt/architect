@@ -96,6 +96,7 @@ Removed or intentionally hidden:
 - `Cmd+Arrow` in grid. Plain arrows own grid movement.
 - `Cmd+K`. It clears terminals and is too easy to hit accidentally.
 - `Cmd+1` through `Cmd+0`. Slot jumps are not needed here.
+- `Cmd+R`. Reader mode has no global launch hotkey in this fork.
 - `Cmd+O`. Recent folder launching is not a primary fork workflow.
 - `Cmd+D`. The diff overlay can still exist, but no global launch hotkey.
 
