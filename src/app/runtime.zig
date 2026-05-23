@@ -1930,11 +1930,7 @@ pub fn run(options: RunOptions) !void {
                         continue;
                     }
 
-                    if (key == c.SDLK_K and has_gui and !has_blocking_mod) {
-                        if (config.ui.show_hotkey_feedback) ui.showHotkey("⌘K", now);
-                        terminal_actions.clearTerminal(focused);
-                        ui.showToast("Cleared terminal", now);
-                    } else if (key == c.SDLK_C and has_gui and !has_blocking_mod) {
+                    if (key == c.SDLK_C and has_gui and !has_blocking_mod) {
                         if (config.ui.show_hotkey_feedback) ui.showHotkey("⌘C", now);
                         terminal_actions.copySelectionToClipboard(focused, allocator, &ui, now) catch |err| {
                             std.debug.print("Copy failed: {}\n", .{err});
