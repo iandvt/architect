@@ -1930,6 +1930,44 @@ pub fn run(options: RunOptions) !void {
                         continue;
                     }
 
+                    if (input.gridViewShortcut(key, mod)) {
+                        if (config.ui.show_hotkey_feedback) ui.showHotkey("⌘G", now);
+                        if (anim_state.mode == .Full and countSpawnedSessions(sessions) > 1) {
+                            if (animations_enabled) {
+                                grid_nav.startCollapseToGrid(&anim_state, now, cell_width_pixels, cell_height_pixels, render_width, render_height, grid.cols);
+                            } else {
+                                const grid_row: c_int = @intCast(anim_state.focused_session / grid.cols);
+                                const grid_col: c_int = @intCast(anim_state.focused_session % grid.cols);
+                                anim_state.mode = .Grid;
+                                anim_state.start_time = now;
+                                anim_state.start_rect = Rect{ .x = 0, .y = 0, .w = render_width, .h = render_height };
+                                anim_state.target_rect = Rect{
+                                    .x = grid_col * cell_width_pixels,
+                                    .y = grid_row * cell_height_pixels,
+                                    .w = cell_width_pixels,
+                                    .h = cell_height_pixels,
+                                };
+                            }
+                        } else if (anim_state.mode == .Grid) {
+                            try grid_nav.expandGridSession(
+                                sessions,
+                                session_interaction_component,
+                                &anim_state,
+                                anim_state.focused_session,
+                                now,
+                                animations_enabled,
+                                cell_width_pixels,
+                                cell_height_pixels,
+                                render_width,
+                                render_height,
+                                grid.cols,
+                                &loop,
+                            );
+                            std.debug.print("Expanding session via grid toggle: {d}\n", .{anim_state.focused_session});
+                        }
+                        continue;
+                    }
+
                     if (key == c.SDLK_C and has_gui and !has_blocking_mod) {
                         if (config.ui.show_hotkey_feedback) ui.showHotkey("⌘C", now);
                         terminal_actions.copySelectionToClipboard(focused, allocator, &ui, now) catch |err| {

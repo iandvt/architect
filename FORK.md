@@ -78,6 +78,7 @@ as any shortcut behavior change.
 
 Current global shortcuts:
 
+- `Cmd+G`: toggle grid/full view. Pressing it again from grid expands the active tile.
 - `Cmd+Arrow`: move between slots in full view.
 - `Cmd+T`: open the worktree picker.
 - `Cmd+N`: create a terminal after the current one.
