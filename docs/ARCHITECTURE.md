@@ -522,7 +522,7 @@ Rotate: rename active file to architect-<UTC timestamp>.log and continue in new 
 ### ADR-011: Hardcoded Keybindings
 
 - **Decision:** All keyboard shortcuts are hardcoded in the source code. There is no user-configurable keybinding system.
-- **Context:** The application has a small, focused set of shortcuts (Cmd+N, Cmd+W, Cmd+T, Cmd+D, Cmd+R, Cmd+/, Cmd+1-0, Cmd+Return, Cmd+Q, plus overlay-local bindings like Cmd+F in reader mode). A configurable keybinding system adds significant complexity (parser, conflict detection, documentation generation) for marginal user benefit at this stage.
+- **Context:** The application has a small, focused set of shortcuts (Cmd+G, plain arrows in grid, Enter in grid, Cmd+N, Cmd+W, Cmd+T, Cmd+Shift+R, Cmd+/, Cmd+Q, plus overlay-local bindings like Cmd+F in reader mode). A configurable keybinding system adds significant complexity (parser, conflict detection, documentation generation) for marginal user benefit at this stage.
 - **Alternatives considered:**
   - *Config-driven keybindings* -- deferred, not rejected; may be added as the shortcut set grows, but current simplicity is preferred during early development.
 - **Date:** 2025 (input system implementation)

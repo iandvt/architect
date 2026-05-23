@@ -18,6 +18,7 @@ const shortcuts = [_]Shortcut{
     .{ .key = "Enter", .desc = "Expand focused terminal" },
     .{ .key = "⌘↑/↓/←/→", .desc = "Move between slots" },
     .{ .key = "⌘T", .desc = "Open worktree picker" },
+    .{ .key = "⌘⇧R", .desc = "Open reader mode" },
     .{ .key = "⌘?", .desc = "Open help" },
     .{ .key = "⌘N", .desc = "Spawn new terminal" },
     .{ .key = "⌘⇧+ / ⌘⇧-", .desc = "Adjust font size" },
