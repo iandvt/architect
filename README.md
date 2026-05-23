@@ -33,7 +33,6 @@ Architect solves this with a grid view that keeps all your agents visible, with 
 - **Dynamic grid** — starts with a single terminal in full view; press ⌘N to add a terminal after the current one, and closing terminals compacts the grid forward
 - **Grid view** — keep all agents visible simultaneously, expand any one to full screen
 - **Worktree picker** (⌘T) — quickly `cd` into git worktrees for parallel agent work on separate branches; new worktrees are created outside the repository tree (configurable via `[worktree]` in `config.toml`) with automatic post-create initialization
-- **Diff review comments** — click diff lines in the ⌘D overlay to leave inline comments with multiline wrapping, then send them all to a running agent (or start one) with the "Send to agent" button
 - **Story viewer** — inside an Architect terminal, run `architect story <filename>` to open a scrollable overlay that renders PR story files with prose text and diff-colored code blocks
 - **MCP session spawning** — run `architect-mcp` from an MCP client to ask the running Architect app to create a terminal session in a requested working directory
 - **Reader mode** (⌘R) — open a centered markdown reader for the selected terminal's history (works in full view and grid) with live updates, bottom pinning, incremental search (⌘F, Enter/Shift+Enter), markdown tables with inline cell styling (bold/italic/code/links/strikethrough), task checkboxes (emoji), clickable links, shared draggable scrollbar, and left-to-right gradient separators before command prompts (OSC 133 + fallback heuristics)
@@ -41,8 +40,7 @@ Architect solves this with a grid view that keeps all your agents visible, with 
 ### Terminal Essentials
 - Smooth animated transitions for grid expansion, contraction, and reflow (cells and borders move/resize together)
 - Wakeable idle input handling keeps typing responsive after short idle periods instead of waiting on a fixed sleep window
-- Keyboard navigation: ⌘Arrow to move between slots from full view, ⌘N to add, ⌘W to close a terminal (restarts if it's the only terminal), ⌘T for worktrees, ⌘D for repository-wide git diff (staged + unstaged + untracked), ⌘R for reader mode, ⌘/ for shortcuts; quit with ⌘Q or the window close button
-- Git diff overlay title shows the repository root folder being diffed
+- Keyboard navigation: ⌘Arrow to move between slots from full view, ⌘N to add, ⌘W to close a terminal (restarts if it's the only terminal), ⌘T for worktrees, ⌘R for reader mode, ⌘/ for shortcuts; quit with ⌘Q or the window close button
 - Per-cell cwd bar in grid view reserves space, and terminal dimensions track grid/full mode so content wraps inside the visible area
 - Scrollback with trackpad/wheel support and an auto-hiding draggable scrollbar in terminal views
 - OSC 8 hyperlink support (Cmd+Click to open)

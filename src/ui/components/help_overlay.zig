@@ -18,7 +18,6 @@ const shortcuts = [_]Shortcut{
     .{ .key = "⌘?", .desc = "Open help" },
     .{ .key = "⌘N", .desc = "Spawn new terminal" },
     .{ .key = "⌘⇧+ / ⌘⇧-", .desc = "Adjust font size" },
-    .{ .key = "⌘D", .desc = "Show git diff" },
     .{ .key = "⌘R", .desc = "Open reader mode" },
     .{ .key = "⌘W", .desc = "Delete terminal" },
     .{ .key = "⌘,", .desc = "Open config file" },

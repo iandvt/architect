@@ -2696,7 +2696,7 @@ pub fn run(options: RunOptions) !void {
                 switch (diff_overlay_component.toggle(focused_cwd, now)) {
                     .not_a_repo => ui.showToast("Not a git repository", now),
                     .clean => ui.showToast("Working tree clean", now),
-                    .opened => if (config.ui.show_hotkey_feedback) ui.showHotkey("⌘D", now),
+                    .opened => if (config.ui.show_hotkey_feedback) ui.showHotkey("Diff", now),
                 }
             },
             .ToggleReaderOverlay => {

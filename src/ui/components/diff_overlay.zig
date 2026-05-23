@@ -1172,19 +1172,6 @@ pub const DiffOverlayComponent = struct {
         const self: *DiffOverlayComponent = @ptrCast(@alignCast(self_ptr));
 
         if (!self.overlay.visible) {
-            if (event.type == c.SDL_EVENT_KEY_DOWN) {
-                const key = event.key.key;
-                const mod = event.key.mod;
-                const has_gui = (mod & c.SDL_KMOD_GUI) != 0;
-                const has_blocking = (mod & (c.SDL_KMOD_CTRL | c.SDL_KMOD_ALT | c.SDL_KMOD_SHIFT)) != 0;
-
-                if (has_gui and !has_blocking and key == c.SDLK_D) {
-                    actions.append(.ToggleDiffOverlay) catch |err| {
-                        log.warn("failed to queue ToggleDiffOverlay action: {}", .{err});
-                    };
-                    return true;
-                }
-            }
             return false;
         }
 
@@ -1203,7 +1190,6 @@ pub const DiffOverlayComponent = struct {
                 const mod = event.key.mod;
                 const has_gui = (mod & c.SDL_KMOD_GUI) != 0;
                 const has_shift = (mod & c.SDL_KMOD_SHIFT) != 0;
-                const has_blocking = (mod & (c.SDL_KMOD_CTRL | c.SDL_KMOD_ALT | c.SDL_KMOD_SHIFT)) != 0;
 
                 // Editing text input: handle special keys
                 const editor_interactive = self.editing != null and
@@ -1256,13 +1242,6 @@ pub const DiffOverlayComponent = struct {
                         self.show_agent_dropdown = false;
                         return true;
                     }
-                    actions.append(.ToggleDiffOverlay) catch |err| {
-                        log.warn("failed to queue ToggleDiffOverlay action: {}", .{err});
-                    };
-                    return true;
-                }
-
-                if (has_gui and !has_blocking and key == c.SDLK_D) {
                     actions.append(.ToggleDiffOverlay) catch |err| {
                         log.warn("failed to queue ToggleDiffOverlay action: {}", .{err});
                     };
