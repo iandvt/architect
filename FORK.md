@@ -80,7 +80,6 @@ Current global shortcuts:
 
 - `Cmd+Arrow`: move between slots in full view.
 - `Cmd+T`: open the worktree picker.
-- `Cmd+O`: open recent folders.
 - `Cmd+D`: open the git diff overlay.
 - `Cmd+R`: reader mode.
 - `Cmd+N`: create a terminal after the current one.
@@ -97,6 +96,7 @@ Retired shortcuts:
 - `Cmd+Arrow` in grid. Plain arrows will own grid movement.
 - `Cmd+1` through `Cmd+0`. Slot jumps are not needed here.
 - `Cmd+K`. It clears terminals and is too easy to hit accidentally.
+- `Cmd+O`. Recent folder launching is not a primary fork workflow.
 
 ## MCP Helper
 

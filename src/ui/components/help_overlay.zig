@@ -15,7 +15,6 @@ const shortcuts = [_]Shortcut{
     .{ .key = "ESC (hold)", .desc = "Collapse to grid view" },
     .{ .key = "⌘↑/↓/←/→", .desc = "Move between slots" },
     .{ .key = "⌘T", .desc = "Open worktree picker" },
-    .{ .key = "⌘O", .desc = "Open recent folders" },
     .{ .key = "⌘?", .desc = "Open help" },
     .{ .key = "⌘N", .desc = "Spawn new terminal" },
     .{ .key = "⌘⇧+ / ⌘⇧-", .desc = "Adjust font size" },

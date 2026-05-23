@@ -49,7 +49,6 @@ pub const RecentFoldersOverlayComponent = struct {
     const TextTex = search_utils.TextTex;
 
     const EntryTex = struct {
-        hotkey: TextTex,
         path: TextTex,
         displayed_text: []const u8,
     };
@@ -201,19 +200,6 @@ pub const RecentFoldersOverlayComponent = struct {
             },
             c.SDL_EVENT_KEY_DOWN => {
                 const key = event.key.key;
-                const mod = event.key.mod;
-                const has_gui = (mod & c.SDL_KMOD_GUI) != 0;
-                const has_blocking_mod = (mod & (c.SDL_KMOD_ALT | c.SDL_KMOD_CTRL)) != 0;
-
-                // Cmd+O toggles overlay
-                if (has_gui and !has_blocking_mod and key == c.SDLK_O) {
-                    if (self.overlay.state == .Open) {
-                        self.closeOverlay(host.now_ms);
-                    } else {
-                        self.overlay.startExpanding(host.now_ms);
-                    }
-                    return true;
-                }
 
                 if (self.overlay.state == .Open) {
                     if (key == c.SDLK_BACKSPACE) {
@@ -260,18 +246,6 @@ pub const RecentFoldersOverlayComponent = struct {
                         self.escape_pressed = true;
                         self.closeOverlay(host.now_ms);
                         return true;
-                    }
-
-                    // Cmd+1-9 for quick selection
-                    if (has_gui and !has_blocking_mod) {
-                        if (key >= c.SDLK_1 and key <= c.SDLK_9) {
-                            const digit_idx: usize = @intCast(key - c.SDLK_1);
-                            if (self.filteredFolder(digit_idx)) |folder| {
-                                self.emitChangeDir(actions, host.focused_session, folder.abs_path);
-                                self.closeOverlay(host.now_ms);
-                                return true;
-                            }
-                        }
                     }
 
                     return true;
@@ -376,7 +350,7 @@ pub const RecentFoldersOverlayComponent = struct {
         const font_size = dpi.scale(@max(12, @min(20, @divFloor(rect.h, 2))), ui_scale);
         const fonts = cache.get(font_size) catch return;
 
-        const glyph = "⌘O";
+        const glyph = "Dir";
         const fg = theme.foreground;
         const fg_color = c.SDL_Color{ .r = fg.r, .g = fg.g, .b = fg.b, .a = 255 };
         const surface = c.TTF_RenderText_Blended(fonts.regular, glyph.ptr, @intCast(glyph.len), fg_color) orelse return;
@@ -501,14 +475,6 @@ pub const RecentFoldersOverlayComponent = struct {
                     _ = c.SDL_RenderFillRect(renderer, &right_strip);
                 }
             }
-
-            // Render hotkey
-            _ = c.SDL_RenderTexture(renderer, entry_tex.hotkey.tex, null, &c.SDL_FRect{
-                .x = @floatFromInt(rect.x + scaled_margin),
-                .y = @floatFromInt(y_offset),
-                .w = @floatFromInt(entry_tex.hotkey.w),
-                .h = @floatFromInt(entry_tex.hotkey.h),
-            });
 
             // Render path (right-aligned)
             const path_x = rect.x + rect.w - scaled_margin - entry_tex.path.w;
@@ -661,7 +627,6 @@ pub const RecentFoldersOverlayComponent = struct {
             return null;
         };
 
-        const key_color = c.SDL_Color{ .r = 97, .g = 175, .b = 239, .a = 255 };
         const entry_color = c.SDL_Color{ .r = 171, .g = 178, .b = 191, .a = 255 };
 
         const entries = self.allocator.alloc(EntryTex, entry_count) catch {
@@ -673,26 +638,11 @@ pub const RecentFoldersOverlayComponent = struct {
 
         const padding = dpi.scale(20, ui_scale);
         const overlay_width = dpi.scale(button_size_large, ui_scale);
-        const hotkey_spacing = dpi.scale(10, ui_scale);
 
         for (0..entry_count) |idx| {
             const source_idx = self.filtered_indices.items[idx];
-            var key_buf: [8]u8 = undefined;
-            const digit: u8 = @as(u8, @intCast((idx + 1) % 10));
-            const key_slice = std.fmt.bufPrint(&key_buf, "⌘{d}", .{digit}) catch |err| blk: {
-                log.warn("failed to format hotkey: {}", .{err});
-                break :blk key_buf[0..0];
-            };
-            const key_tex = makeTextTexture(renderer, entry_fonts.regular, key_slice, key_color) catch {
-                destroyEntryTextures(self.allocator, entries[0..idx]);
-                self.allocator.free(entries);
-                c.SDL_DestroyTexture(title_tex.tex);
-                self.allocator.destroy(cache);
-                return null;
-            };
-
             const path_slice = self.all_folders.items[source_idx].display;
-            const max_path_width = overlay_width - (2 * padding) - key_tex.w - hotkey_spacing;
+            const max_path_width = overlay_width - (2 * padding);
 
             var path_buf: [256]u8 = undefined;
             const truncated_path = truncateTextLeft(path_slice, entry_fonts.regular, max_path_width, &path_buf) catch |err| blk: {
@@ -700,7 +650,6 @@ pub const RecentFoldersOverlayComponent = struct {
                 break :blk path_slice;
             };
             const path_tex = makeTextTexture(renderer, entry_fonts.regular, truncated_path, entry_color) catch {
-                c.SDL_DestroyTexture(key_tex.tex);
                 destroyEntryTextures(self.allocator, entries[0..idx]);
                 self.allocator.free(entries);
                 c.SDL_DestroyTexture(title_tex.tex);
@@ -709,14 +658,13 @@ pub const RecentFoldersOverlayComponent = struct {
             };
             const stored_text = self.allocator.dupe(u8, truncated_path) catch {
                 c.SDL_DestroyTexture(path_tex.tex);
-                c.SDL_DestroyTexture(key_tex.tex);
                 destroyEntryTextures(self.allocator, entries[0..idx]);
                 self.allocator.free(entries);
                 c.SDL_DestroyTexture(title_tex.tex);
                 self.allocator.destroy(cache);
                 return null;
             };
-            entries[idx] = .{ .hotkey = key_tex, .path = path_tex, .displayed_text = stored_text };
+            entries[idx] = .{ .path = path_tex, .displayed_text = stored_text };
         }
 
         cache.* = .{
@@ -838,7 +786,6 @@ pub const RecentFoldersOverlayComponent = struct {
 
     fn destroyEntryTextures(allocator: std.mem.Allocator, entries: []EntryTex) void {
         for (entries) |entry| {
-            c.SDL_DestroyTexture(entry.hotkey.tex);
             c.SDL_DestroyTexture(entry.path.tex);
             allocator.free(entry.displayed_text);
         }
