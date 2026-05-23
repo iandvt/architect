@@ -341,7 +341,7 @@ pub const HoldGesture = struct {
 
 EscapeHold component:
 
-* On `KEY_DOWN Escape` (non-repeat) when `input.canHandleEscapePress(view_mode)` is true:
+* On `KEY_DOWN Escape` (non-repeat) when the UI escape predicate accepts `view_mode`:
 
   * start gesture
   * consume the keydown (so app doesn’t treat it as terminal input)

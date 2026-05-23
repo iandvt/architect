@@ -77,6 +77,7 @@ Remaining global shortcuts:
 - `Cmd+N`: create a terminal after the current one.
 - `Cmd+W`: close a terminal, or restart the only terminal.
 - `Cmd+Q`: quit.
+- `Cmd+T`: remote terminal overlay.
 - `Cmd+/`: help.
 - `Cmd+,`: open config.
 - `Cmd+C` / `Cmd+V`: copy and paste.
@@ -88,7 +89,6 @@ Removed or intentionally hidden:
 - `Cmd+Arrow` in grid. Plain arrows own grid movement.
 - `Cmd+K`. It clears terminals and is too easy to hit accidentally.
 - `Cmd+1` through `Cmd+0`. Slot jumps are not needed here.
-- `Cmd+T`. Worktrunk commands such as `wt switch` and `wtc` cover this workflow.
 - `Cmd+O`. Recent folder launching is not a primary fork workflow.
 - `Cmd+D`. The diff overlay can still exist, but no global launch hotkey.
 

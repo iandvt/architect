@@ -12,6 +12,7 @@ const input_text = @import("input_text.zig");
 const layout = @import("layout.zig");
 const terminal_actions = @import("terminal_actions.zig");
 const runtime_instance = @import("runtime_instance.zig");
+const command_overlay_mod = @import("command_overlay.zig");
 const ui_host = @import("ui_host.zig");
 const worktree = @import("worktree.zig");
 const control = @import("control.zig");
@@ -799,6 +800,7 @@ fn reloadRuntimeFontsForScaleChange(ctx: *RuntimeScaleChangeContext) font_mod.Fo
         ctx.ui_font,
     );
     ctx.ui.assets.ui_font = ctx.ui_font;
+    ctx.ui.assets.terminal_font = ctx.font;
 }
 
 fn applyRuntimeResizeForScaleChange(ctx: *RuntimeScaleChangeContext) void {
@@ -1265,6 +1267,7 @@ pub fn run(options: RunOptions) !void {
     var ui_deinitialized = false;
     errdefer if (markTeardownComplete(&ui_deinitialized)) ui.deinit(renderer);
     ui.assets.ui_font = &ui_font;
+    ui.assets.terminal_font = &font;
     ui.assets.font_cache = &ui_font_cache;
 
     var window_x: c_int = persistence.window.x;
@@ -1368,6 +1371,8 @@ pub fn run(options: RunOptions) !void {
 
     var render_cache = try renderer_mod.RenderCache.init(allocator, grid_layout.max_terminals);
     defer render_cache.deinit();
+    var command_overlays = try command_overlay_mod.CommandOverlaySet.init(allocator, grid_layout.max_terminals, shell_path, size, notify_sock, theme);
+    defer command_overlays.deinit();
 
     var foreground_cache = ForegroundProcessCache{};
 
@@ -1457,6 +1462,8 @@ pub fn run(options: RunOptions) !void {
     try ui.register(diff_overlay_component.asComponent());
     const reader_overlay_component = try ui_mod.reader_overlay.ReaderOverlayComponent.init(allocator, sessions);
     try ui.register(reader_overlay_component.asComponent());
+    const command_overlay_component = try ui_mod.command_overlay.CommandOverlayComponent.init(allocator, &command_overlays);
+    try ui.register(command_overlay_component.asComponent());
     const story_overlay_component = try ui_mod.story_overlay.StoryOverlayComponent.init(allocator);
     try ui.register(story_overlay_component.asComponent());
 
@@ -2085,7 +2092,7 @@ pub fn run(options: RunOptions) !void {
                                 ui.showToast("All terminals in use", now);
                             }
                         }
-                    } else if (input.commandGridNavShortcut(key, mod, anim_state.mode)) |direction| {
+                    } else if (if (anim_state.mode == .Full) input.gridNavShortcut(key, mod) else null) |direction| {
                         if (config.ui.show_hotkey_feedback) {
                             const arrow = switch (direction) {
                                 .up => "⌘↑",
@@ -2123,7 +2130,7 @@ pub fn run(options: RunOptions) !void {
                             session_interaction_component.resetScrollIfNeeded(anim_state.focused_session);
                             try input_keys.handleKeyInput(focused, key, mod);
                         }
-                    } else if (input.gridExpandShortcut(key, mod, anim_state.mode)) {
+                    } else if (anim_state.mode == .Grid and input.gridSelectShortcut(key, mod)) {
                         if (config.ui.show_hotkey_feedback) {
                             ui.showHotkey("↵", now);
                         }
@@ -2153,7 +2160,7 @@ pub fn run(options: RunOptions) !void {
                 },
                 c.SDL_EVENT_KEY_UP => {
                     const key = scaled_event.key.key;
-                    if (key == c.SDLK_ESCAPE and input.canHandleEscapePress(anim_state.mode)) {
+                    if (key == c.SDLK_ESCAPE and ui_mod.canHandleEscapePress(anim_state.mode)) {
                         const focused = sessions[anim_state.focused_session];
                         if (focused.spawned and !focused.dead and focused.shell != null) {
                             const esc_byte: [1]u8 = .{27};
@@ -2223,6 +2230,7 @@ pub fn run(options: RunOptions) !void {
             running = false;
         }
         var any_session_dirty = render_cache.anyDirty(sessions);
+        const command_overlay_dirty = command_overlays.processOutput();
 
         var control_requests = control_queue.drainAll();
         defer control_requests.deinit(allocator);
@@ -2744,6 +2752,41 @@ pub fn run(options: RunOptions) !void {
                     .unavailable => ui.showToast("Reader mode requires a selected running terminal", now),
                 }
             },
+            .ToggleCommandOverlay => {
+                if (command_overlays.isVisible()) {
+                    command_overlays.hideActive();
+                    command_overlay_component.setOpen(false, now);
+                    continue;
+                }
+
+                const terminal_rect = command_overlay_mod.terminalRect(render_width, render_height, ui_scale);
+                const overlay_size = command_overlay_mod.terminalSizeForRect(&font, terminal_rect);
+                const focused_cwd = if (anim_state.focused_session < sessions.len)
+                    sessions[anim_state.focused_session].cwd_path
+                else
+                    null;
+
+                command_overlays.showFor(anim_state.focused_session, focused_cwd, overlay_size, &loop) catch |err| {
+                    log.warn("failed to open command overlay: {}", .{err});
+                    ui.showToast("Could not open command overlay", now);
+                    command_overlay_component.setOpen(false, now);
+                    continue;
+                };
+                command_overlay_component.setOpen(true, now);
+                ui.showToast("Remote Terminal", now);
+                if (config.ui.show_hotkey_feedback) ui.showHotkey("⌘T", now);
+            },
+            .CommandOverlayKey => |key_action| {
+                command_overlays.sendKey(key_action.key, key_action.mod) catch |err| {
+                    log.warn("failed to send command overlay key input: {}", .{err});
+                };
+            },
+            .CommandOverlayTextInput => |text| {
+                defer allocator.free(text);
+                command_overlays.sendText(text) catch |err| {
+                    log.warn("failed to send command overlay text input: {}", .{err});
+                };
+            },
             .SendDiffComments => |dc_action| {
                 if (dc_action.session >= sessions.len) {
                     allocator.free(dc_action.comments_text);
@@ -2862,7 +2905,7 @@ pub fn run(options: RunOptions) !void {
         const animating = anim_state.mode != .Grid and anim_state.mode != .Full;
         const ui_needs_frame = ui.needsFrame(&ui_render_host);
         const last_render_stale = last_render_ns == 0 or (frame_start_ns - last_render_ns) >= max_idle_render_gap_ns;
-        const should_render = animating or any_session_dirty or ui_needs_frame or processed_event or had_notifications or had_control_requests or last_render_stale;
+        const should_render = animating or any_session_dirty or command_overlay_dirty or ui_needs_frame or processed_event or had_notifications or had_control_requests or last_render_stale;
 
         if (should_render) {
             if (relaunch_trace_frames > 0) {
@@ -2905,7 +2948,7 @@ pub fn run(options: RunOptions) !void {
             relaunch_trace_frames -= 1;
         }
 
-        const is_idle = !animating and !any_session_dirty and !ui_needs_frame and !processed_event and !had_notifications and !had_control_requests;
+        const is_idle = !animating and !any_session_dirty and !command_overlay_dirty and !ui_needs_frame and !processed_event and !had_notifications and !had_control_requests;
 
         if (window_close_suppress_countdown > 0) {
             window_close_suppress_countdown -= 1;

@@ -1,6 +1,5 @@
 const std = @import("std");
 const c = @import("../c.zig");
-const app_state = @import("../app/app_state.zig");
 
 pub const FontSizeDirection = enum { increase, decrease };
 pub const GridNavDirection = enum { up, down, left, right };
@@ -48,23 +47,15 @@ pub fn readerOverlayShortcut(_: c.SDL_Keycode, _: c.SDL_Keymod) bool {
     return false;
 }
 
+pub fn commandOverlayShortcut(key: c.SDL_Keycode, mod: c.SDL_Keymod) bool {
+    if ((mod & c.SDL_KMOD_GUI) == 0) return false;
+    if ((mod & (c.SDL_KMOD_SHIFT | c.SDL_KMOD_CTRL | c.SDL_KMOD_ALT)) != 0) return false;
+    return key == c.SDLK_T;
+}
+
 pub fn gridSelectShortcut(key: c.SDL_Keycode, mod: c.SDL_Keymod) bool {
     if ((mod & (c.SDL_KMOD_GUI | c.SDL_KMOD_SHIFT | c.SDL_KMOD_CTRL | c.SDL_KMOD_ALT)) != 0) return false;
     return key == c.SDLK_RETURN;
-}
-
-pub fn gridExpandShortcut(key: c.SDL_Keycode, mod: c.SDL_Keymod, mode: app_state.ViewMode) bool {
-    if (mode != .Grid) return false;
-    return gridSelectShortcut(key, mod);
-}
-
-pub fn commandGridNavShortcut(key: c.SDL_Keycode, mod: c.SDL_Keymod, mode: app_state.ViewMode) ?GridNavDirection {
-    if (mode != .Full) return null;
-    return gridNavShortcut(key, mod);
-}
-
-pub fn canHandleEscapePress(mode: app_state.ViewMode) bool {
-    return mode != .Grid and mode != .Collapsing and mode != .GridResizing;
 }
 
 pub fn terminalSwitchShortcut(_: c.SDL_Keycode, _: c.SDL_Keymod, _: usize) ?usize {
@@ -430,10 +421,15 @@ test "gridViewShortcut recognizes plain command G" {
     try std.testing.expect(!gridViewShortcut(c.SDLK_G, c.SDL_KMOD_GUI | c.SDL_KMOD_ALT));
 }
 
-test "reader overlay shortcut is disabled" {
+test "reader and command overlay shortcuts do not overlap" {
     try std.testing.expect(!readerOverlayShortcut(c.SDLK_R, c.SDL_KMOD_GUI));
     try std.testing.expect(!readerOverlayShortcut(c.SDLK_R, c.SDL_KMOD_GUI | c.SDL_KMOD_CTRL));
     try std.testing.expect(!readerOverlayShortcut(c.SDLK_R, c.SDL_KMOD_GUI | c.SDL_KMOD_SHIFT));
+    try std.testing.expect(commandOverlayShortcut(c.SDLK_T, c.SDL_KMOD_GUI));
+    try std.testing.expect(!commandOverlayShortcut(c.SDLK_R, c.SDL_KMOD_GUI | c.SDL_KMOD_CTRL));
+    try std.testing.expect(!commandOverlayShortcut(c.SDLK_T, c.SDL_KMOD_GUI | c.SDL_KMOD_CTRL));
+    try std.testing.expect(!commandOverlayShortcut(c.SDLK_T, c.SDL_KMOD_GUI | c.SDL_KMOD_CTRL | c.SDL_KMOD_SHIFT));
+    try std.testing.expect(!commandOverlayShortcut(c.SDLK_T, c.SDL_KMOD_GUI | c.SDL_KMOD_ALT));
 }
 
 test "plainGridNavShortcut recognizes unmodified arrows only" {
@@ -455,20 +451,6 @@ test "gridSelectShortcut recognizes unmodified return only" {
     try std.testing.expect(!gridSelectShortcut(c.SDLK_RETURN, c.SDL_KMOD_CTRL));
     try std.testing.expect(!gridSelectShortcut(c.SDLK_RETURN, c.SDL_KMOD_ALT));
     try std.testing.expect(!gridSelectShortcut(c.SDLK_G, 0));
-}
-
-test "gridExpandShortcut only expands grid with unmodified return" {
-    try std.testing.expect(gridExpandShortcut(c.SDLK_RETURN, 0, .Grid));
-    try std.testing.expect(!gridExpandShortcut(c.SDLK_RETURN, c.SDL_KMOD_GUI, .Grid));
-    try std.testing.expect(!gridExpandShortcut(c.SDLK_RETURN, 0, .Full));
-}
-
-test "commandGridNavShortcut is full-view only" {
-    try std.testing.expectEqual(GridNavDirection.left, commandGridNavShortcut(c.SDLK_LEFT, c.SDL_KMOD_GUI, .Full).?);
-    try std.testing.expect(commandGridNavShortcut(c.SDLK_LEFT, c.SDL_KMOD_GUI, .Grid) == null);
-    try std.testing.expect(commandGridNavShortcut(c.SDLK_LEFT, 0, .Full) == null);
-    try std.testing.expect(commandGridNavShortcut(c.SDLK_LEFT, c.SDL_KMOD_GUI | c.SDL_KMOD_ALT, .Full) == null);
-    try std.testing.expect(commandGridNavShortcut(c.SDLK_LEFT, c.SDL_KMOD_GUI | c.SDL_KMOD_CTRL, .Full) == null);
 }
 
 test "encodeKeyWithMod - shift+tab legacy mode" {

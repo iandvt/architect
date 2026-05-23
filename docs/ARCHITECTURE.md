@@ -245,6 +245,24 @@ ui/components/markdown_renderer.RenderLine[]
 Reader overlay (live updates + search)
 ```
 
+### Remote Terminal Overlay Path
+
+```
+Cmd+T
+    | UiAction.ToggleCommandOverlay
+    v
+app/command_overlay.CommandOverlay
+    | spawn or show persistent per-grid-slot SessionState in focused cwd
+    v
+PTY + ghostty-vt terminal state
+    | UI component captures input and forwards key/text actions
+    v
+ui/components/command_overlay.zig renders a fullscreen frame
+    | render/renderer.renderSessionIntoRect()
+    v
+Persistent remote terminal overlay (one per grid slot, not persisted, not a grid slot)
+```
+
 ### Story Content Path
 
 ```
@@ -413,14 +431,16 @@ Rotate: rename active file to architect-<UTC timestamp>.log and continue in new 
 | `gfx/*` (box_drawing, primitives) | Procedural box-drawing characters (U+2500-U+257F), rounded/thick border helpers, filled circles, bezier arrow rendering | `renderBoxDrawing()`, `drawRoundedRect()`, `drawThickBorder()`, `fillCircle()`, `fillRoundedRect()`, `renderBezierArrow()` | `c` |
 | `ui/root.zig` | UI component registry, z-index dispatch, action drain | `UiRoot`, `register()`, `handleEvent()`, `update()`, `render()`, `needsFrame()` | `ui/component`, `ui/types` |
 | `ui/component.zig` | UI component vtable interface | `UiComponent`, `VTable` (handleEvent, update, render, hitTest, wantsFrame, deinit) | `ui/types`, `c` |
-| `ui/types.zig` | Shared UI type definitions | `UiHost`, `UiAction`, `UiActionQueue`, `UiAssets`, `SessionUiInfo` | `app/app_state`, `colors`, `font`, `geom` |
+| `ui/types.zig` | Shared UI type definitions | `UiHost`, `UiAction`, `UiActionQueue`, `UiAssets`, `SessionUiInfo` | `app/app_state`, `colors`, `font`, `geom`, `c` |
 | `ui/session_view_state.zig` | Per-session UI interaction state (selection, scroll, hover, agent status, scrollbar fade/drag state) | `SessionViewState` (selection, scroll offset, hover, status, terminal scrollbar state) | `app/app_state` (for `SessionStatus` enum), `ui/components/scrollbar` |
 | `ui/first_frame_guard.zig` | Idle throttle bypass for visible state transitions | `FirstFrameGuard`, `markTransition()`, `markDrawn()`, `wantsFrame()` | (none) |
 | `ui/components/markdown_parser.zig` | Shared markdown parser for reader mode and story overlays. Parses headings, paragraphs, lists (including task checkboxes), blockquotes, markdown tables, fenced code, horizontal rules, inline styles (bold/italic/code/strikethrough/link), and prompt separator blocks. In story mode (`parseStory()`), additionally handles `story-diff` fenced blocks, code block metadata JSON, anchor extraction (`**[N]**` in prose, `<!--ref:N-->` in code), and per-line paragraph emission. | `parse()`, `parseStory()`, `freeBlocks()`, `DisplayBlock`, `StyledSpan`, `CodeBlockMeta`, `CodeLineKind`, `ParseOptions` | std |
 | `ui/components/markdown_renderer.zig` | Line layout engine that wraps parsed markdown blocks into renderable lines and style runs, including prompt-separator and story-specific line kinds (diff headers, diff lines, code lines with anchor/kind metadata) | `buildLines()`, `freeLines()`, `RenderLine`, `RenderRun` | `ui/components/markdown_parser` |
 | `ui/components/search_utils.zig` | Shared search utilities for overlays: case-insensitive substring find, match rebuilding, search bar rendering, and text texture creation | `SearchMatch`, `TextTex`, `findCaseInsensitive()`, `rebuildMatches()`, `renderSearchBar()`, `makeTextTexture()` | `gfx/primitives`, `font_cache`, `dpi`, `geom`, `c` |
 | `ui/components/reader_overlay.zig` | Fullscreen reader overlay for the selected terminal history (full view or grid selection) with live markdown updates, centered reading-width layout, bottom pinning, jump-to-bottom, incremental search, clickable links, shared scrollbar interactions, styled inline markdown in table cells, and left-to-right gradient prompt separators | `ReaderOverlayComponent`, `toggle()` | `ui/components/fullscreen_overlay`, `ui/components/scrollbar`, `ui/components/search_utils`, `app/terminal_history`, `ui/components/markdown_parser`, `ui/components/markdown_renderer`, `os/open`, `font_cache`, `geom`, `c` |
-| `ui/components/*` | Individual overlay and widget implementations conforming to `UiComponent` vtable. Includes: help overlay, worktree picker, recent folders picker (with instant search filtering), diff viewer (with inline review comments), story viewer (PR story file visualization with rich markdown, anchor badges, bezier arrows, clickable links, and Cmd+F search — uses shared markdown parser/renderer pipeline and shared search utilities), reader mode overlay (uses shared search utilities), fullscreen overlay helper (shared animation/scroll/close logic embedded by story, diff, and reader overlays), reusable aqua-style scrollbar widget, session interaction, toast, quit confirm, quit-blocking overlay, restart buttons, escape hold indicator, metrics overlay, global shortcuts, pill group, cwd bar, expanding overlay helper, button, confirm dialog, marquee label, hotkey indicator, flowing line, hold gesture detector. | Each component implements the `VTable` interface; overlays toggle via keyboard shortcuts or external commands and emit `UiAction` values. | `ui/component`, `ui/types`, `anim/easing`, `font`, `metrics`, `url_matcher`, `ui/session_view_state` |
+| `ui/components/command_overlay.zig` | Fullscreen persistent terminal overlay for one-off commands, opened with Cmd+T, rendered above the grid/full scene without consuming a grid slot. Escape and the close button hide the overlay while preserving the selected slot's helper shell. | `CommandOverlayComponent`, `setOpen()` | `app/command_overlay`, `ui/components/fullscreen_overlay`, `ui/components/search_utils`, `input/mapper`, `app/input_keys`, `font_cache`, `c` |
+| `app/command_overlay.zig` | Runtime state for the remote terminal overlay's PTY-backed sessions. Owns one `CommandOverlay` per grid slot, with each overlay holding its own `SessionState`, terminal sizing, input forwarding, output draining, and renderer cache entry; hiding an overlay keeps that slot's shell and scrollback alive. | `CommandOverlaySet`, `CommandOverlay`, `panelRect()`, `terminalRect()`, `terminalSizeForRect()` | `session/state`, `render/renderer`, `app/layout`, `input/mapper`, `font`, `colors`, `geom`, `xev`, `c` |
+| `ui/components/*` | Individual overlay and widget implementations conforming to `UiComponent` vtable. Includes: help overlay, worktree picker, recent folders picker (with instant search filtering), diff viewer (with inline review comments), story viewer (PR story file visualization with rich markdown, anchor badges, bezier arrows, clickable links, and Cmd+F search — uses shared markdown parser/renderer pipeline and shared search utilities), reader mode overlay (uses shared search utilities), remote terminal overlay, fullscreen overlay helper (shared animation/scroll/close logic embedded by story, diff, reader, and remote terminal overlays), reusable aqua-style scrollbar widget, session interaction, toast, quit confirm, quit-blocking overlay, restart buttons, escape hold indicator, metrics overlay, global shortcuts, pill group, cwd bar, expanding overlay helper, button, confirm dialog, marquee label, hotkey indicator, flowing line, hold gesture detector. | Each component implements the `VTable` interface; overlays toggle via keyboard shortcuts or external commands and emit `UiAction` values. | `ui/component`, `ui/types`, `anim/easing`, `font`, `metrics`, `url_matcher`, `ui/session_view_state` |
 | `logging.zig` | File-backed structured logger with runtime level filtering and size-based rotation | `init()`, `deinit()`, `logFn()`, `writeEvent()`, `writeStartupMarker()`, `writeShutdownMarker()` | std |
 | Shared Utilities (`geom`, `colors`, `dpi`, `config`, `logging`, `metrics`, `url_matcher`, `os/open`, `anim/easing`) | Geometry primitives, theme/palette management, DPI scaling helpers, TOML config loading/persistence, file-backed logging, performance metrics, URL detection, cross-platform URL opening, easing functions | `Rect`, `Theme`, `Config`, `logFn`, `Metrics`, `dpi.scale()`, `matchUrl()`, `open()`, `easeInOutCubic()`, `easeOutCubic()` | std, zig-toml, `c` |
 
@@ -522,7 +542,7 @@ Rotate: rename active file to architect-<UTC timestamp>.log and continue in new 
 ### ADR-011: Hardcoded Keybindings
 
 - **Decision:** All keyboard shortcuts are hardcoded in the source code. There is no user-configurable keybinding system.
-- **Context:** The application has a small, focused set of shortcuts (Cmd+N, Cmd+W, Cmd+G, Cmd+/, Cmd+Q, Cmd+Arrow in full view, arrow keys and Enter in grid view, plus overlay-local bindings like Cmd+F in reader mode). Duplicate grid shortcuts such as Cmd+Return and Cmd+Arrow in grid view, numeric slot jumps, worktree/recent-folder/diff launch shortcuts, and destructive terminal-clear shortcuts are intentionally omitted. A configurable keybinding system adds significant complexity (parser, conflict detection, documentation generation) for marginal user benefit at this stage.
+- **Context:** The application has a small, focused set of shortcuts (Cmd+N, Cmd+W, Cmd+G, Cmd+T for the remote terminal overlay, Cmd+/, Cmd+Q, Cmd+Arrow in full view, arrow keys and Enter in grid view, plus overlay-local bindings like Cmd+F in reader mode). Duplicate grid shortcuts such as Cmd+Return and Cmd+Arrow in grid view, numeric slot jumps, worktree/recent-folder/diff launch shortcuts, and destructive terminal-clear shortcuts are intentionally omitted. A configurable keybinding system adds significant complexity (parser, conflict detection, documentation generation) for marginal user benefit at this stage.
 - **Alternatives considered:**
   - *Config-driven keybindings* -- deferred, not rejected; may be added as the shortcut set grows, but current simplicity is preferred during early development.
 - **Date:** 2025 (input system implementation)

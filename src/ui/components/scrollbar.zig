@@ -727,6 +727,7 @@ test "state fades in, waits, and fades out with auto-hide timing" {
 
     state.noteActivity(t0);
     try std.testing.expect(state.wantsFrame(t0));
+    state.markDrawn();
 
     state.update(t0 + fade_in_duration_ms);
     try std.testing.expectApproxEqAbs(@as(f32, 1.0), state.alpha, 0.001);
@@ -740,6 +741,7 @@ test "state fades in, waits, and fades out with auto-hide timing" {
     const fade_start = t0 + idle_hide_delay_ms + 1;
     state.update(fade_start);
     try std.testing.expect(state.phase == .fading_out);
+    state.markDrawn();
 
     const hidden_at = fade_start + fade_out_duration_ms + 1;
     state.update(hidden_at);
