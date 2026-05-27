@@ -117,6 +117,7 @@ Each commit should include:
 - Input/runtime change.
 - Focused input test.
 - Help overlay or documentation update if the shortcut was visible.
+- `FORK.md` shortcut policy update that records the removed affordance.
 
 Each commit should exclude replacement shortcut behavior.
 
@@ -136,6 +137,7 @@ Each commit should include:
 - Input predicate or runtime behavior.
 - Focused test.
 - Help overlay or user documentation update when visible.
+- `FORK.md` shortcut policy update that records the preferred affordance.
 
 ### 5. `feat(ui): add command-t remote terminal overlay`
 
