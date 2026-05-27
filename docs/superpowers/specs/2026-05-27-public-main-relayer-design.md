@@ -62,7 +62,6 @@ NEW      feat(ui): add command-t remote terminal overlay
 NEW      feat(app): add command-shift-s saved session picker
 NEW      fix(ui): polish saved session picker rows
 NEW      chore(ui): remove grid directory chrome
-NEW      chore(packaging): publish bundles by branch
 ```
 
 ## Commit Boundaries
@@ -89,13 +88,15 @@ Scope:
 - Add the build/install/pinning support needed to validate Stable/Scratch locally.
 - Include setup and SDK workaround updates when they are required for the pinned Zig/macOS build path.
 - Include app-bundle launch/install helpers needed by the Stable/Scratch session workflow.
+- Add branch-aware bundle publishing so Stable is built from `main` and Scratch is built from `scratch`.
+- Update Makefile, bundle script, release workflow/formula wiring, and development documentation as part of the Stable/Scratch app story.
 
 Exclude:
 
 - Shortcut removals.
 - Removed reader or directory chrome.
 - VS Code pairing notes.
-- Branch-aware publish refinements that are not required to build, install, and launch the Stable/Scratch apps for validation.
+- Later packaging cleanups that are unrelated to Stable/Scratch channel validation.
 
 ### 3. Removed Hotkey Commits
 
@@ -183,17 +184,6 @@ Scope:
 
 This should stay one commit.
 
-### 9. `chore(packaging): publish bundles by branch`
-
-Scope:
-
-- Add or revise the remaining branch-aware app publishing behavior.
-- Keep Stable publishing tied to `main`.
-- Keep Scratch publishing tied to `scratch`.
-- Update Makefile, release script, formula, and development documentation.
-
-This belongs after the public product surface is shaped. Build/install support that is required for the Stable/Scratch session feature belongs in the session commit; this packaging commit is for the branch-aware publish policy and related cleanup.
-
 ## Source Commit Map
 
 Use this map as the first pass when replaying:
@@ -207,7 +197,7 @@ e178fd1 -> keep unchanged as chore(claude): scaffold worktree workspace
 29f1de7 -> feat(app): add command-shift-s saved session picker
 b063d4d -> fix(ui): polish saved session picker rows
 working tree -> chore(ui): remove grid directory chrome
-e92eafb -> chore(packaging): publish bundles by branch
+e92eafb -> fold into feat(app): add Stable/Scratch named sessions unless a small unrelated cleanup remains
 ```
 
 Some commits are intentionally split because the existing history mixes app sessions, shortcut policy, and documentation updates.
@@ -244,5 +234,4 @@ Resolve these before execution:
 
 - Whether `FORK.md` should include only current policy or also future editor pairing notes.
 - Whether command-t remote terminal overlay should be one feature commit or split into overlay core plus shortcut entry point.
-- Which packaging files belong to the Stable/Scratch session commit because they are required for local validation, versus the later branch-aware publishing policy commit.
 - Whether to preserve committer dates exactly for all replayed commits or preserve only author dates.
