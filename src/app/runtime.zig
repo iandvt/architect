@@ -1472,19 +1472,15 @@ pub fn run(options: RunOptions) !void {
     };
     defer saved_sessions.deinit();
     for (saved_sessions.items.items) |saved| {
-        if (std.mem.eql(u8, saved.id, options.session_id)) continue;
-
-        const label = if (saved.emoji.len > 0)
-            try std.fmt.allocPrint(allocator, "{s} {s}", .{ saved.emoji, saved.display_name })
-        else
-            try allocator.dupe(u8, saved.display_name);
-        defer allocator.free(label);
-
         const terminal_word = if (saved.terminal_count == 1) "terminal" else "terminals";
-        const detail = try std.fmt.allocPrint(allocator, "{s} - {d} {s}", .{ saved.id, saved.terminal_count, terminal_word });
+        const is_current_session = std.mem.eql(u8, saved.id, options.session_id);
+        const detail = if (is_current_session)
+            try std.fmt.allocPrint(allocator, "{s} - current", .{saved.id})
+        else
+            try std.fmt.allocPrint(allocator, "{s} - {d} {s}", .{ saved.id, saved.terminal_count, terminal_word });
         defer allocator.free(detail);
 
-        try session_picker_comp_ptr.addSession(saved.id, label, detail);
+        try session_picker_comp_ptr.addSessionWithState(saved.id, saved.emoji, saved.display_name, detail, is_current_session);
     }
 
     const help_comp_ptr = try allocator.create(ui_mod.help_overlay.HelpOverlayComponent);

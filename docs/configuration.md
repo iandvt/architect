@@ -254,7 +254,7 @@ Reopen a specific session with:
 zig build run -- --instance Stable --session HappyOtter
 ```
 
-Inside the app, press `Cmd+Shift+S` to open the saved-session picker for the active channel. Choosing an entry launches that session in a new Architect window and leaves the current window running.
+Inside the app, press `Cmd+Shift+S` to open the saved-session picker for the active channel. Choosing an entry launches that session in a new Architect window and leaves the current window running. The current session appears in the picker as a disabled row so it cannot be opened twice from itself.
 
 If a saved terminal working directory cannot be reopened, Architect preserves the saved terminal list instead of replacing it with a fallback shell's current directory.
 

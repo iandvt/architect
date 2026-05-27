@@ -29,7 +29,7 @@ Architect solves this with a grid view that keeps all your agents visible, with 
 
 ### Agent-Focused
 - **Status highlights** — agents glow when awaiting approval or done, so you never miss a prompt
-- **Named sessions** — app bundles run as Stable or Scratch channels; each launch gets a named session such as `Stable / 🦦 Happy Otter`; press ⌘⇧S to reopen another saved session from the same channel in a new window, restoring terminal working directories and pre-filling saved agent resume commands for manual restart
+- **Named sessions** — app bundles run as Stable or Scratch channels; each launch gets a named session such as `Stable / 🦦 Happy Otter`; press ⌘⇧S to reopen another saved session from the same channel in a new window, while the current session is shown as disabled
 - **Dynamic grid** — starts with a single terminal in full view; press ⌘N to add a terminal after the current one, and closing terminals compacts the grid forward
 - **Grid view** — keep all agents visible simultaneously, expand any one to full screen
 - **Story viewer** — inside an Architect terminal, run `architect story <filename>` to open a scrollable overlay that renders PR story files with prose text and diff-colored code blocks

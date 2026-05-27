@@ -37,8 +37,10 @@ pub const SessionPickerOverlayComponent = struct {
 
     pub const Session = struct {
         id: []const u8,
+        emoji: []const u8,
         label: []const u8,
         detail: []const u8,
+        is_current: bool = false,
     };
 
     pub fn init(allocator: std.mem.Allocator) !*SessionPickerOverlayComponent {
@@ -56,8 +58,31 @@ pub const SessionPickerOverlayComponent = struct {
     }
 
     pub fn addSession(self: *SessionPickerOverlayComponent, id: []const u8, label: []const u8, detail: []const u8) !void {
+        try self.addSessionWithEmoji(id, "", label, detail);
+    }
+
+    pub fn addSessionWithEmoji(
+        self: *SessionPickerOverlayComponent,
+        id: []const u8,
+        emoji: []const u8,
+        label: []const u8,
+        detail: []const u8,
+    ) !void {
+        try self.addSessionWithState(id, emoji, label, detail, false);
+    }
+
+    pub fn addSessionWithState(
+        self: *SessionPickerOverlayComponent,
+        id: []const u8,
+        emoji: []const u8,
+        label: []const u8,
+        detail: []const u8,
+        is_current: bool,
+    ) !void {
         const id_copy = try self.allocator.dupe(u8, id);
         errdefer self.allocator.free(id_copy);
+        const emoji_copy = try self.allocator.dupe(u8, emoji);
+        errdefer self.allocator.free(emoji_copy);
         const label_copy = try self.allocator.dupe(u8, label);
         errdefer self.allocator.free(label_copy);
         const detail_copy = try self.allocator.dupe(u8, detail);
@@ -65,8 +90,10 @@ pub const SessionPickerOverlayComponent = struct {
 
         try self.sessions.append(self.allocator, .{
             .id = id_copy,
+            .emoji = emoji_copy,
             .label = label_copy,
             .detail = detail_copy,
+            .is_current = is_current,
         });
         self.refilter();
     }
@@ -87,6 +114,7 @@ pub const SessionPickerOverlayComponent = struct {
     fn clearSessions(self: *SessionPickerOverlayComponent) void {
         for (self.sessions.items) |session| {
             self.allocator.free(session.id);
+            self.allocator.free(session.emoji);
             self.allocator.free(session.label);
             self.allocator.free(session.detail);
         }
@@ -111,6 +139,7 @@ pub const SessionPickerOverlayComponent = struct {
         if (self.selected_index >= self.filtered_indices.items.len) {
             self.selected_index = if (self.filtered_indices.items.len > 0) self.filtered_indices.items.len - 1 else 0;
         }
+        self.ensureSelectableSession();
     }
 
     fn filteredSession(self: *SessionPickerOverlayComponent, display_idx: usize) ?Session {
@@ -118,6 +147,39 @@ pub const SessionPickerOverlayComponent = struct {
         const source_idx = self.filtered_indices.items[display_idx];
         if (source_idx >= self.sessions.items.len) return null;
         return self.sessions.items[source_idx];
+    }
+
+    fn firstSelectableIndex(self: *SessionPickerOverlayComponent) ?usize {
+        for (self.filtered_indices.items, 0..) |source_idx, display_idx| {
+            if (source_idx < self.sessions.items.len and !self.sessions.items[source_idx].is_current) return display_idx;
+        }
+        return null;
+    }
+
+    fn ensureSelectableSession(self: *SessionPickerOverlayComponent) void {
+        if (self.filteredSession(self.selected_index)) |session| {
+            if (!session.is_current) return;
+        }
+        self.selected_index = self.firstSelectableIndex() orelse 0;
+    }
+
+    fn moveSelection(self: *SessionPickerOverlayComponent, direction: enum { previous, next }) void {
+        const len = self.filtered_indices.items.len;
+        if (len == 0) return;
+        var idx = self.selected_index;
+        var remaining = len;
+        while (remaining > 0) : (remaining -= 1) {
+            idx = switch (direction) {
+                .previous => if (idx > 0) idx - 1 else len - 1,
+                .next => if (idx + 1 < len) idx + 1 else 0,
+            };
+            if (self.filteredSession(idx)) |session| {
+                if (!session.is_current) {
+                    self.selected_index = idx;
+                    return;
+                }
+            }
+        }
     }
 
     fn isActive(self: *const SessionPickerOverlayComponent) bool {
@@ -144,8 +206,10 @@ pub const SessionPickerOverlayComponent = struct {
                 if (inside and self.overlay.state == .Open) {
                     if (self.entryIndexAtPoint(host, mouse_y)) |idx| {
                         if (self.filteredSession(idx)) |session| {
-                            self.emitOpenSession(actions, session.id);
-                            self.closeOverlay(host.now_ms);
+                            if (!session.is_current) {
+                                self.emitOpenSession(actions, session.id);
+                                self.closeOverlay(host.now_ms);
+                            }
                         }
                         return true;
                     }
@@ -207,21 +271,19 @@ pub const SessionPickerOverlayComponent = struct {
                         return true;
                     }
                     if (key == c.SDLK_UP) {
-                        if (self.filtered_indices.items.len > 0) {
-                            self.selected_index = if (self.selected_index > 0) self.selected_index - 1 else self.filtered_indices.items.len - 1;
-                        }
+                        self.moveSelection(.previous);
                         return true;
                     }
                     if (key == c.SDLK_DOWN) {
-                        if (self.filtered_indices.items.len > 0) {
-                            self.selected_index = if (self.selected_index + 1 < self.filtered_indices.items.len) self.selected_index + 1 else 0;
-                        }
+                        self.moveSelection(.next);
                         return true;
                     }
                     if (key == c.SDLK_RETURN or key == c.SDLK_KP_ENTER) {
                         if (self.filteredSession(self.selected_index)) |session| {
-                            self.emitOpenSession(actions, session.id);
-                            self.closeOverlay(host.now_ms);
+                            if (!session.is_current) {
+                                self.emitOpenSession(actions, session.id);
+                                self.closeOverlay(host.now_ms);
+                            }
                         }
                         return true;
                     }
@@ -333,6 +395,10 @@ pub const SessionPickerOverlayComponent = struct {
         const title_fonts = font_cache.get(dpi.scale(20, ui_scale)) catch return;
         const entry_fonts = font_cache.get(dpi.scale(15, ui_scale)) catch return;
         const detail_fonts = font_cache.get(dpi.scale(13, ui_scale)) catch return;
+        const emoji_font = blk: {
+            const emoji_fonts = font_cache.get(dpi.scale(11, ui_scale)) catch break :blk entry_fonts.regular;
+            break :blk emoji_fonts.emoji orelse emoji_fonts.regular;
+        };
         const fg = host.theme.foreground;
         const title_color = c.SDL_Color{ .r = fg.r, .g = fg.g, .b = fg.b, .a = 255 };
         const detail_color = c.SDL_Color{ .r = 171, .g = 178, .b = 191, .a = 255 };
@@ -366,8 +432,9 @@ pub const SessionPickerOverlayComponent = struct {
 
         for (self.filtered_indices.items, 0..) |source_idx, display_idx| {
             const session = self.sessions.items[source_idx];
-            const is_selected = display_idx == self.selected_index;
-            const is_hovered = if (self.hovered_entry) |h| h == display_idx else false;
+            const is_disabled = session.is_current;
+            const is_selected = !is_disabled and display_idx == self.selected_index;
+            const is_hovered = !is_disabled and if (self.hovered_entry) |h| h == display_idx else false;
             if (is_selected or is_hovered) {
                 const alpha: u8 = if (is_selected) 64 else 40;
                 _ = c.SDL_SetRenderDrawBlendMode(renderer, c.SDL_BLENDMODE_BLEND);
@@ -380,7 +447,23 @@ pub const SessionPickerOverlayComponent = struct {
                 });
             }
 
-            renderText(renderer, entry_fonts.regular, session.label, title_color, rect.x + scaled_margin, y_offset, .top_left);
+            const row_title_color = if (is_disabled) detail_color else title_color;
+            var label_x = rect.x + scaled_margin;
+            if (session.emoji.len > 0) {
+                const emoji_slot = sessionEmojiSlotWidth(ui_scale);
+                renderTextMaxHeight(
+                    renderer,
+                    emoji_font,
+                    session.emoji,
+                    row_title_color,
+                    label_x + @divFloor(emoji_slot, 2),
+                    y_offset + @divFloor(scaled_line_height, 2),
+                    .center,
+                    sessionEmojiMaxHeight(ui_scale),
+                );
+                label_x += emoji_slot + sessionEmojiLabelGap(ui_scale);
+            }
+            renderText(renderer, entry_fonts.regular, session.label, row_title_color, label_x, y_offset, .top_left);
             renderText(renderer, detail_fonts.regular, session.detail, detail_color, rect.x + rect.w - scaled_margin, y_offset + dpi.scale(2, ui_scale), .top_right);
 
             if (is_selected) {
@@ -430,8 +513,21 @@ pub const SessionPickerOverlayComponent = struct {
 fn sessionMatchesQuery(session: SessionPickerOverlayComponent.Session, query: []const u8) bool {
     if (query.len == 0) return true;
     return search_utils.findCaseInsensitive(session.label, query, 0) != null or
+        search_utils.findCaseInsensitive(session.emoji, query, 0) != null or
         search_utils.findCaseInsensitive(session.id, query, 0) != null or
         search_utils.findCaseInsensitive(session.detail, query, 0) != null;
+}
+
+fn sessionEmojiSlotWidth(ui_scale: f32) c_int {
+    return dpi.scale(18, ui_scale);
+}
+
+fn sessionEmojiLabelGap(ui_scale: f32) c_int {
+    return dpi.scale(4, ui_scale);
+}
+
+fn sessionEmojiMaxHeight(ui_scale: f32) c_int {
+    return dpi.scale(13, ui_scale);
 }
 
 const TextAnchor = enum { center, top_left, top_center, top_right };
@@ -445,6 +541,32 @@ fn renderText(
     y: c_int,
     anchor: TextAnchor,
 ) void {
+    renderTextWithOptionalMaxHeight(renderer, font, text, color, x, y, anchor, null);
+}
+
+fn renderTextMaxHeight(
+    renderer: *c.SDL_Renderer,
+    font: *c.TTF_Font,
+    text: []const u8,
+    color: c.SDL_Color,
+    x: c_int,
+    y: c_int,
+    anchor: TextAnchor,
+    max_height: c_int,
+) void {
+    renderTextWithOptionalMaxHeight(renderer, font, text, color, x, y, anchor, max_height);
+}
+
+fn renderTextWithOptionalMaxHeight(
+    renderer: *c.SDL_Renderer,
+    font: *c.TTF_Font,
+    text: []const u8,
+    color: c.SDL_Color,
+    x: c_int,
+    y: c_int,
+    anchor: TextAnchor,
+    max_height: ?c_int,
+) void {
     const surface = c.TTF_RenderText_Blended(font, text.ptr, @intCast(text.len), color) orelse return;
     defer c.SDL_DestroySurface(surface);
     const texture = c.SDL_CreateTextureFromSurface(renderer, surface) orelse return;
@@ -456,23 +578,30 @@ fn renderText(
 
     var draw_x: c_int = x;
     var draw_y: c_int = y;
-    const w_i: c_int = @intFromFloat(w_f);
-    const h_i: c_int = @intFromFloat(h_f);
+    var render_w: c_int = @intFromFloat(w_f);
+    var render_h: c_int = @intFromFloat(h_f);
+    if (max_height) |limit| {
+        if (limit > 0 and render_h > limit) {
+            const scale = @as(f32, @floatFromInt(limit)) / @as(f32, @floatFromInt(render_h));
+            render_w = @max(1, @as(c_int, @intFromFloat(@as(f32, @floatFromInt(render_w)) * scale)));
+            render_h = limit;
+        }
+    }
     switch (anchor) {
         .center => {
-            draw_x -= @divFloor(w_i, 2);
-            draw_y -= @divFloor(h_i, 2);
+            draw_x -= @divFloor(render_w, 2);
+            draw_y -= @divFloor(render_h, 2);
         },
         .top_left => {},
-        .top_center => draw_x -= @divFloor(w_i, 2),
-        .top_right => draw_x -= w_i,
+        .top_center => draw_x -= @divFloor(render_w, 2),
+        .top_right => draw_x -= render_w,
     }
 
     _ = c.SDL_RenderTexture(renderer, texture, null, &c.SDL_FRect{
         .x = @floatFromInt(draw_x),
         .y = @floatFromInt(draw_y),
-        .w = w_f,
-        .h = h_f,
+        .w = @floatFromInt(render_w),
+        .h = @floatFromInt(render_h),
     });
 }
 
@@ -605,6 +734,51 @@ test "enter emits selected saved session action" {
     try std.testing.expect(actions.pop() == null);
 }
 
+test "session picker keeps emoji separate from row label" {
+    var component = SessionPickerOverlayComponent{ .allocator = std.testing.allocator };
+    defer deinitTestComponent(&component);
+
+    try component.addSessionWithEmoji("Alpha", "✨", "Alpha Display", "Alpha - 2 terminals");
+
+    try std.testing.expectEqual(@as(usize, 1), component.sessions.items.len);
+    try std.testing.expectEqualStrings("✨", component.sessions.items[0].emoji);
+    try std.testing.expectEqualStrings("Alpha Display", component.sessions.items[0].label);
+}
+
+test "session picker emoji fits within row height" {
+    const ui_scale: f32 = 1.0;
+    try std.testing.expect(sessionEmojiMaxHeight(ui_scale) < dpi.scale(SessionPickerOverlayComponent.line_height, ui_scale));
+}
+
+test "session picker skips current session for keyboard selection" {
+    var component = SessionPickerOverlayComponent{ .allocator = std.testing.allocator };
+    defer deinitTestComponent(&component);
+
+    try component.addSessionWithState("Current", "✨", "Current Session", "Current - active", true);
+    try component.addSessionWithState("Other", "🦦", "Other Session", "Other - 2 terminals", false);
+
+    try std.testing.expectEqual(@as(usize, 2), component.filtered_indices.items.len);
+    try std.testing.expectEqual(@as(usize, 1), component.selected_index);
+}
+
+test "session picker does not open current session" {
+    var theme = colors.Theme.default();
+    var component = SessionPickerOverlayComponent{ .allocator = std.testing.allocator };
+    defer deinitTestComponent(&component);
+    try component.addSessionWithState("Current", "✨", "Current Session", "Current - active", true);
+    openComponentForTest(&component);
+
+    const host = testHost(&theme);
+    var actions = types.UiActionQueue.init(std.testing.allocator);
+    defer actions.deinit();
+    var event = keyDownEvent(c.SDLK_RETURN, 0);
+
+    const ui_component = component.asComponent();
+    try std.testing.expect(ui_component.vtable.handleEvent.?(ui_component.ptr, &host, &event, &actions));
+    try std.testing.expect(actions.pop() == null);
+    try std.testing.expectEqual(ExpandingOverlay.State.Open, component.overlay.state);
+}
+
 test "clicking session picker search area keeps picker open" {
     var theme = colors.Theme.default();
     var component = SessionPickerOverlayComponent{ .allocator = std.testing.allocator };
@@ -709,6 +883,7 @@ test "open session picker consumes pointer events" {
 test "sessionMatchesQuery checks label id and detail" {
     const session = SessionPickerOverlayComponent.Session{
         .id = "SleepySloth",
+        .emoji = "",
         .label = "Sleepy Sloth",
         .detail = "3 terminals",
     };
