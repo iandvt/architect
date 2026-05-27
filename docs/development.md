@@ -62,15 +62,16 @@ Direct binary launches must pass an instance channel, for example `zig build run
 For local app-bundle launches, use the Makefile from the repository root:
 
 ```bash
-make apps                              # rebuild .tmp/current-apps/Architect (Stable|Scratch).app
-make stable                            # launch a new Stable session through the app bundle
+make publish-apps                      # rebuild, install to /Applications, and refresh Dock icons
+make apps                              # rebuild this branch's app bundle under .tmp/current-apps
+make stable                            # launch a new Stable session through /Applications
 make stable SESSION=HappyOtter         # restore a Stable session by session ID
-make scratch                           # launch a new Scratch session through the app bundle
+make scratch                           # launch a new Scratch session through /Applications
 make scratch-restore SESSION=BoldBadger
 make sessions                          # list saved sessions under ~/.config/architect/instances
 ```
 
-The `stable` and `scratch` targets launch a fresh named session when `SESSION` is unset and restore that session when `SESSION` is set. The explicit `stable-new`, `scratch-new`, `stable-restore`, and `scratch-restore` targets are available for scripts that should avoid that conditional behavior.
+The `publish-apps` target is branch-aware. From `main`, it rebuilds and replaces only `/Applications/Architect (Stable).app`; from `scratch`, it rebuilds and replaces only `/Applications/Architect (Scratch).app`. It clears quarantine attributes, registers the refreshed app with Launch Services, removes stale Architect Dock tiles, adds Dock icons for installed Stable/Scratch bundles, and restarts the Dock. Never build Stable from `scratch` or Scratch from `main`. The `stable` and `scratch` targets launch the matching installed `/Applications` bundle, start a fresh named session when `SESSION` is unset, and restore that session when `SESSION` is set. The explicit `stable-new`, `scratch-new`, `stable-restore`, and `scratch-restore` targets are available for scripts that should avoid that conditional behavior.
 
 ## Dependencies and Tooling
 
@@ -109,7 +110,9 @@ git tag v0.1.0
 git push origin v0.1.0
 ```
 
-The release workflow packages ad-hoc-signed app bundles with local `codesign --sign -`. It does not import macOS signing certificates, does not produce Developer ID-signed artifacts, and does not notarize the app. Release downloads therefore still require clearing the quarantine attribute after extraction, as described in the README installation instructions. You can also run the Release workflow manually with `workflow_dispatch` to validate the packaging flow before pushing a real release tag.
+The release workflow packages ad-hoc-signed app bundles with local `codesign --sign -`. It does not import macOS signing certificates, does not produce Developer ID-signed artifacts, and does not notarize the app. Release downloads therefore still require clearing the quarantine attribute after extraction. This fork has not published Stable/Scratch release archives yet; the quarantine command is kept in README troubleshooting for future release testing. You can also run the Release workflow manually with `workflow_dispatch` to validate the packaging flow before pushing a real release tag.
+
+The forked Homebrew formula is currently HEAD-only. The release workflow does not update formula `url` or `sha256` fields until the fork switches to a stable formula policy.
 
 Each release includes:
 - `architect-macos-arm64.tar.gz` - Apple Silicon

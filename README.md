@@ -51,30 +51,9 @@ Architect solves this with a grid view that keeps all your agents visible, with 
 
 ### Download Pre-built Binary (macOS)
 
-Download the latest release from the [releases page](https://github.com/forketyfork/architect/releases).
+This fork has not published Stable/Scratch release archives yet. Use the source build or HEAD-only Homebrew flow below for the forked app names.
 
-**For Apple Silicon (M1/M2/M3/M4):**
-```bash
-curl -LO https://github.com/forketyfork/architect/releases/latest/download/architect-macos-arm64.tar.gz
-tar -xzf architect-macos-arm64.tar.gz
-xattr -dr com.apple.quarantine "Architect (Stable).app" "Architect (Scratch).app"
-open "Architect (Stable).app"
-```
-
-**For Intel Macs:**
-```bash
-curl -LO https://github.com/forketyfork/architect/releases/latest/download/architect-macos-x86_64.tar.gz
-tar -xzf architect-macos-x86_64.tar.gz
-xattr -dr com.apple.quarantine "Architect (Stable).app" "Architect (Scratch).app"
-open "Architect (Stable).app"
-```
-
-**Note**:
-
-* These GitHub release archives are ad-hoc signed so macOS can launch them locally, but they are not Developer ID signed or notarized.
-* Clear the quarantine attribute before first launch, or macOS may block the app.
-* The archive contains `Architect (Stable).app` and `Architect (Scratch).app`. You can launch them with `open` or run `Contents/MacOS/architect` from inside either bundle. The `architect-mcp` helper is built from source but omitted from release app bundles unless the bundle script is called with `--with-mcp`.
-* Not sure which architecture? Run `uname -m` - if it shows `arm64`, use the ARM64 version; if it shows `x86_64`, use the Intel version.
+Upstream release archives are available from the [forketyfork releases page](https://github.com/forketyfork/architect/releases), but those artifacts track upstream packaging rather than this fork's unreleased Stable/Scratch bundle flow.
 
 ### Homebrew (macOS)
 
@@ -83,13 +62,10 @@ open "Architect (Stable).app"
 xcode-select --install
 ```
 
-Install via Homebrew (builds from source):
+Install this fork's HEAD-only formula from its tap:
 ```bash
-# Tap the repository (note: requires full repo URL since the formula is in the main repo)
-brew tap forketyfork/architect https://github.com/forketyfork/architect
-
-# Install architect
-brew install architect
+brew tap iandvt/architect https://github.com/iandvt/architect
+brew install --HEAD iandvt/architect/architect
 
 # Copy the apps to your Applications folder
 cp -r "$(brew --prefix)/opt/architect/Architect (Stable).app" /Applications/
@@ -99,11 +75,10 @@ cp -r "$(brew --prefix)/opt/architect/Architect (Scratch).app" /Applications/
 architect-mcp
 ```
 
-Or install directly without tapping:
+From a local checkout, prefer the source app targets because Homebrew expects external formulae to live in a tap:
 ```bash
-brew install https://raw.githubusercontent.com/forketyfork/architect/main/Formula/architect.rb
-cp -r "$(brew --prefix)/opt/architect/Architect (Stable).app" /Applications/
-cp -r "$(brew --prefix)/opt/architect/Architect (Scratch).app" /Applications/
+make publish-apps            # run from main for Stable, scratch for Scratch
+make stable
 ```
 
 ### Build from Source
@@ -118,10 +93,10 @@ Source builds install both executables under `zig-out/bin/`: `architect` and `ar
 
 For local macOS app bundle launches from this checkout:
 ```bash
-make apps                    # rebuild .tmp/current-apps/Architect (Stable|Scratch).app
-make stable                  # new Stable session
+make publish-apps            # branch-aware publish: main -> Stable, scratch -> Scratch
+make stable                  # new Stable session from /Applications
 make stable SESSION=HappyOtter
-make scratch                 # new Scratch session
+make scratch                 # new Scratch session from /Applications
 make sessions                # list saved named sessions
 ```
 

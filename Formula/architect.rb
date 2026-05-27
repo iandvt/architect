@@ -1,9 +1,11 @@
+# frozen_string_literal: true
+
+# Homebrew formula for the Architect fork app bundles.
 class Architect < Formula
   desc "Terminal window manager with AI-powered workspace orchestration"
-  homepage "https://github.com/forketyfork/architect"
-  url "https://github.com/forketyfork/architect/archive/refs/tags/v0.65.3.tar.gz"
-  sha256 "2c1fd238db019d8a1bba6dcdea15dc28275e3f34e9c9d94706b67fbe05bc80e7"
+  homepage "https://github.com/iandvt/architect"
   license "MIT"
+  head "https://github.com/iandvt/architect.git", branch: "main"
 
   depends_on "pkg-config" => :build
   depends_on xcode: :build
@@ -12,8 +14,9 @@ class Architect < Formula
   depends_on "sdl3_ttf"
 
   def install
-    system "zig", "build",
-           "-Doptimize=ReleaseFast"
+    system "bash", "-c",
+           ". ./scripts/setup-macos-sdk-workaround.sh >/tmp/architect-sdk-workaround.log && " \
+           "zig build -Doptimize=ReleaseFast"
 
     system "scripts/bundle-macos.sh", "zig-out/bin/architect", prefix, "--app-name", "Architect (Stable)"
     system "scripts/bundle-macos.sh", "zig-out/bin/architect", prefix, "--app-name", "Architect (Scratch)"

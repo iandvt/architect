@@ -5,8 +5,8 @@ Stable/Scratch multi-agent desktop setup.
 
 ## Branch Model
 
-- `main`: stable fork base. Build and ship Stable/Scratch app bundles from here.
-- `scratch`: agent work branch. Experimental changes can replace Scratch later.
+- `main`: stable fork base. Build and publish the Stable app bundle from here.
+- `scratch`: agent work branch. Build and publish the Scratch app bundle from here.
 - `upstream`: local branch synced from `forketyfork/architect` `main`.
 
 Branch names are git workflow roles. Stable and Scratch are runtime channel names
@@ -49,15 +49,22 @@ inspect, rebase, cherry-pick, or drop while that policy is still open.
 
 ## Validation
 
-Before asking for visual validation or committing this fork base, rebuild the app
-bundles and exercise both channels:
+Before asking for visual validation or committing this fork base, rebuild and
+publish the app bundle from the matching branch, then exercise the installed
+channel:
 
 ```bash
-make apps
+git switch main
+make publish-apps
 make stable
-make scratch
-make sessions
 make stable SESSION=<SessionId>
+
+git switch scratch
+make publish-apps
+make scratch
+make scratch SESSION=<SessionId>
+
+make sessions
 ```
 
 Confirm that Stable and Scratch create separate directories under
