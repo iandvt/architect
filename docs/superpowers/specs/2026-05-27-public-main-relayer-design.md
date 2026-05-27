@@ -45,7 +45,7 @@ Target stack:
 
 ```text
 0de1ade  upstream/main
-NEW      chore(project): ignore local agent worktrees
+e178fd1  chore(claude): scaffold worktree workspace
 NEW      feat(app): add Stable/Scratch named sessions
 NEW      chore(input): remove command-return grid expand shortcut
 NEW      chore(input): remove command-arrow grid navigation shortcut
@@ -67,13 +67,15 @@ NEW      chore(packaging): publish bundles by branch
 
 ## Commit Boundaries
 
-### 1. `chore(project): ignore local agent worktrees`
+### 1. Keep `e178fd1 chore(claude): scaffold worktree workspace`
 
 Scope:
 
-- Add `.claude/worktrees/` to `.gitignore`.
+- Keep the existing commit unchanged.
+- Keep `.claude/worktrees/` ignored.
+- Keep the `CLAUDE.md` cleanup and fork workflow notes that are already in this commit.
 
-Do not include Worktrunk usage instructions here. Worktrunk is installed globally and should not be part of the public fork story.
+This commit is already cohesive enough: it prepares the repository for local agent worktrees and tightens the contributor-facing workflow guidance. Do not split it into a smaller `.gitignore`-only commit.
 
 ### 2. `feat(app): add Stable/Scratch named sessions`
 
@@ -84,13 +86,16 @@ Scope:
 - Add per-channel session persistence and display metadata.
 - Add startup restore for terminal working directories and manual agent resume prefill.
 - Add `FORK.md` with fork identity, branch roles, validation flow, and session policy.
+- Add the build/install/pinning support needed to validate Stable/Scratch locally.
+- Include setup and SDK workaround updates when they are required for the pinned Zig/macOS build path.
+- Include app-bundle launch/install helpers needed by the Stable/Scratch session workflow.
 
 Exclude:
 
 - Shortcut removals.
 - Removed reader or directory chrome.
 - VS Code pairing notes.
-- Packaging publish policy beyond what is needed for the session behavior.
+- Branch-aware publish refinements that are not required to build, install, and launch the Stable/Scratch apps for validation.
 
 ### 3. Removed Hotkey Commits
 
@@ -182,20 +187,20 @@ This should stay one commit.
 
 Scope:
 
-- Add or revise branch-aware app publishing.
+- Add or revise the remaining branch-aware app publishing behavior.
 - Keep Stable publishing tied to `main`.
 - Keep Scratch publishing tied to `scratch`.
 - Update Makefile, release script, formula, and development documentation.
 
-This belongs after the public product surface is shaped.
+This belongs after the public product surface is shaped. Build/install support that is required for the Stable/Scratch session feature belongs in the session commit; this packaging commit is for the branch-aware publish policy and related cleanup.
 
 ## Source Commit Map
 
 Use this map as the first pass when replaying:
 
 ```text
-e178fd1 -> chore(project): ignore local agent worktrees
-436c6da -> feat(app): add Stable/Scratch named sessions
+e178fd1 -> keep unchanged as chore(claude): scaffold worktree workspace
+436c6da -> feat(app): add Stable/Scratch named sessions, install support, and pinning support
 436c6da/e4cf343 -> removed hotkey commits
 436c6da/e4cf343 -> added hotkey commits
 81469b9 -> feat(ui): add command-t remote terminal overlay
@@ -239,5 +244,5 @@ Resolve these before execution:
 
 - Whether `FORK.md` should include only current policy or also future editor pairing notes.
 - Whether command-t remote terminal overlay should be one feature commit or split into overlay core plus shortcut entry point.
-- Whether packaging should be last, as proposed, or earlier to support app-bundle validation during intermediate commits.
+- Which packaging files belong to the Stable/Scratch session commit because they are required for local validation, versus the later branch-aware publishing policy commit.
 - Whether to preserve committer dates exactly for all replayed commits or preserve only author dates.
