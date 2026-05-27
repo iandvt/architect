@@ -46,11 +46,13 @@ pub fn expandGridSession(
     render_height: c_int,
     grid_cols: usize,
     loop: *xev.Loop,
-) !void {
-    if (idx >= sessions.len) return;
+) !bool {
+    if (idx >= sessions.len) return false;
 
     const previous_session = anim_state.focused_session;
+    const was_spawned = sessions[idx].spawned;
     try sessions[idx].ensureSpawnedWithLoop(loop);
+    const spawned_session = !was_spawned and sessions[idx].spawned;
     session_interaction.clearSelection(previous_session);
     session_interaction.clearSelection(idx);
     session_interaction.setStatus(idx, .running);
@@ -79,6 +81,8 @@ pub fn expandGridSession(
         anim_state.target_rect = target_rect;
         anim_state.previous_session = idx;
     }
+
+    return spawned_session;
 }
 
 pub fn gridNotificationBufferSize(grid_cols: usize, grid_rows: usize) usize {
@@ -130,7 +134,7 @@ pub fn navigateGrid(
     grid_cols: usize,
     grid_rows: usize,
     loop: *xev.Loop,
-) !void {
+) !bool {
     const current_row: usize = anim_state.focused_session / grid_cols;
     const current_col: usize = anim_state.focused_session % grid_cols;
     var new_row: usize = current_row;
@@ -139,6 +143,7 @@ pub fn navigateGrid(
     var is_wrapping = false;
 
     const current_session = anim_state.focused_session;
+    var spawned_session = false;
 
     switch (direction) {
         .up => {
@@ -246,9 +251,13 @@ pub fn navigateGrid(
 
     if (new_session != current_session) {
         if (anim_state.mode == .Full) {
+            const was_spawned = sessions[new_session].spawned;
             try sessions[new_session].ensureSpawnedWithLoop(loop);
+            spawned_session = !was_spawned and sessions[new_session].spawned;
         } else if (show_animation) {
+            const was_spawned = sessions[new_session].spawned;
             try sessions[new_session].ensureSpawnedWithLoop(loop);
+            spawned_session = !was_spawned and sessions[new_session].spawned;
         }
         session_interaction.clearSelection(current_session);
         session_interaction.clearSelection(new_session);
@@ -262,4 +271,5 @@ pub fn navigateGrid(
             anim_state.focused_session = new_session;
         }
     }
+    return spawned_session;
 }

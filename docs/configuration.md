@@ -39,7 +39,7 @@ The grid size is dynamic and adjusts automatically based on the number of termin
 - Press `Cmd+N` to add a new terminal after the currently focused one — the grid expands to accommodate it
 - Press `Cmd+W` to close a terminal — remaining terminals compact forward to fill gaps and the grid shrinks when possible; if it's the only terminal, it restarts in place (use `Cmd+Q` or the window close button to quit)
 - When only one terminal is spawned, the view stays in full-screen mode
-- Grid layout maintains `columns >= rows` (e.g., 1x1 → 2x1 → 2x2 → 3x2 → 3x3 → ...)
+- The first split stacks vertically (`1x1` → `1x2`), then larger grids stay compact and favor wider layouts (`2x2` → `3x2` → `3x3` → ...)
 - Maximum grid size is 12×12 (144 terminals)
 
 ### Window Configuration
@@ -303,7 +303,7 @@ On launch, Architect restores terminals to their saved working directories. The 
 
 Note: Terminal cwd persistence and startup cwd restore are currently macOS-only.
 
-Older `persistence.toml` files that used the root `~/.config/architect/persistence.toml` path, the `[terminals]` table, or `recent_folders` array are migrated automatically. Files without `terminal_agent_types` / `terminal_session_ids` are loaded normally (no agent resumption for those terminals).
+Older `persistence.toml` files that used the root `~/.config/architect/persistence.toml` path are imported into the first named session that launches, then moved aside as `persistence.toml.migrated`. Older file formats that used the `[terminals]` table or `recent_folders` array are migrated automatically. Files without `terminal_agent_types` / `terminal_session_ids` are loaded normally (no agent resumption for those terminals).
 
 ### instance.toml
 

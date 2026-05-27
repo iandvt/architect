@@ -647,14 +647,25 @@ pub const SessionState = struct {
 
     pub fn updateCwd(self: *SessionState, current_time: i64) void {
         if (builtin.os.tag != .macos) return;
-
         if (!self.spawned or self.dead) return;
-
-        const shell = self.shell orelse return;
 
         const check_interval_ms: i64 = 1000;
         if (current_time - self.cwd_last_check < check_interval_ms) return;
         self.cwd_last_check = current_time;
+
+        self.refreshCwd();
+    }
+
+    pub fn updateCwdNow(self: *SessionState, current_time: i64) void {
+        if (builtin.os.tag != .macos) return;
+        if (!self.spawned or self.dead) return;
+
+        self.cwd_last_check = current_time;
+        self.refreshCwd();
+    }
+
+    fn refreshCwd(self: *SessionState) void {
+        const shell = self.shell orelse return;
 
         const new_path = cwd_mod.getCwd(self.allocator, shell.child_pid) catch {
             return;

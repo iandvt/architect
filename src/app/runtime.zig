@@ -1370,6 +1370,12 @@ pub fn run(options: RunOptions) !void {
     const session_ui_info = try allocator.alloc(ui_mod.SessionUiInfo, grid_layout.max_terminals);
     defer allocator.free(session_ui_info);
 
+    const session_dead_snapshot = try allocator.alloc(bool, sessions.len);
+    defer allocator.free(session_dead_snapshot);
+    for (sessions, 0..) |session, idx| {
+        session_dead_snapshot[idx] = session.dead;
+    }
+
     var render_cache = try renderer_mod.RenderCache.init(allocator, grid_layout.max_terminals);
     defer render_cache.deinit();
 
@@ -1949,7 +1955,7 @@ pub fn run(options: RunOptions) !void {
                                 };
                             }
                         } else if (anim_state.mode == .Grid) {
-                            try grid_nav.expandGridSession(
+                            if (try grid_nav.expandGridSession(
                                 sessions,
                                 session_interaction_component,
                                 &anim_state,
@@ -1962,7 +1968,9 @@ pub fn run(options: RunOptions) !void {
                                 render_height,
                                 grid.cols,
                                 &loop,
-                            );
+                            )) {
+                                terminal_entries_mutated = true;
+                            }
                             std.debug.print("Expanding session via grid toggle: {d}\n", .{anim_state.focused_session});
                         }
                         continue;
@@ -2108,7 +2116,9 @@ pub fn run(options: RunOptions) !void {
                             };
                             ui.showHotkey(arrow, now);
                         }
-                        try grid_nav.navigateGrid(&anim_state, sessions, session_interaction_component, direction, now, true, animations_enabled, grid.cols, grid.rows, &loop);
+                        if (try grid_nav.navigateGrid(&anim_state, sessions, session_interaction_component, direction, now, true, animations_enabled, grid.cols, grid.rows, &loop)) {
+                            terminal_entries_mutated = true;
+                        }
 
                         const buf_size = grid_nav.gridNotificationBufferSize(grid.cols, grid.rows);
                         const notification_buf = try allocator.alloc(u8, buf_size);
@@ -2128,7 +2138,9 @@ pub fn run(options: RunOptions) !void {
                                 };
                                 ui.showHotkey(arrow, now);
                             }
-                            try grid_nav.navigateGrid(&anim_state, sessions, session_interaction_component, direction, now, true, false, grid.cols, grid.rows, &loop);
+                            if (try grid_nav.navigateGrid(&anim_state, sessions, session_interaction_component, direction, now, true, false, grid.cols, grid.rows, &loop)) {
+                                terminal_entries_mutated = true;
+                            }
                             const new_session = anim_state.focused_session;
                             session_interaction_component.triggerNavWave(new_session, now);
                             std.debug.print("Grid nav to session {d} (plain arrow)\n", .{new_session});
@@ -2141,7 +2153,7 @@ pub fn run(options: RunOptions) !void {
                             ui.showHotkey("↵", now);
                         }
                         const selected_session = anim_state.focused_session;
-                        try grid_nav.expandGridSession(
+                        if (try grid_nav.expandGridSession(
                             sessions,
                             session_interaction_component,
                             &anim_state,
@@ -2154,7 +2166,9 @@ pub fn run(options: RunOptions) !void {
                             render_height,
                             grid.cols,
                             &loop,
-                        );
+                        )) {
+                            terminal_entries_mutated = true;
+                        }
                         std.debug.print("Expanding session: {d}\n", .{selected_session});
                     } else if (focused.spawned and !focused.dead and !input_keys.isModifierKey(key)) {
                         session_interaction_component.resetScrollIfNeeded(anim_state.focused_session);
@@ -2195,7 +2209,12 @@ pub fn run(options: RunOptions) !void {
             if (relaunch_trace_frames > 0 and session.spawned) {
                 log.info("frame trace before process session idx={d} id={d}", .{ session.slot_index, session.id });
             }
+            const was_dead = session_dead_snapshot[session.slot_index];
             session.checkAlive();
+            if (!was_dead and session.dead) {
+                terminal_entries_mutated = true;
+            }
+            session_dead_snapshot[session.slot_index] = session.dead;
             session.processOutput() catch |err| {
                 log.err("session {d}: process output failed: {}", .{ session.id, err });
                 return err;
@@ -2334,6 +2353,7 @@ pub fn run(options: RunOptions) !void {
             .RestartSession => |idx| {
                 if (idx < sessions.len) {
                     try sessions[idx].restart();
+                    terminal_entries_mutated = true;
                     session_interaction_component.resetView(idx);
                     std.debug.print("UI requested restart: {d}\n", .{idx});
                 }
@@ -2342,7 +2362,7 @@ pub fn run(options: RunOptions) !void {
                 if (anim_state.mode != .Grid) continue;
                 if (idx >= sessions.len) continue;
 
-                try grid_nav.expandGridSession(
+                if (try grid_nav.expandGridSession(
                     sessions,
                     session_interaction_component,
                     &anim_state,
@@ -2355,7 +2375,9 @@ pub fn run(options: RunOptions) !void {
                     render_height,
                     grid.cols,
                     &loop,
-                );
+                )) {
+                    terminal_entries_mutated = true;
+                }
                 std.debug.print("Expanding session: {d}\n", .{idx});
             },
             .DespawnSession => |idx| {
@@ -2577,6 +2599,7 @@ pub fn run(options: RunOptions) !void {
                     ui.showToast("Could not switch worktree", now);
                     continue;
                 };
+                terminal_entries_mutated = true;
 
                 session_interaction_component.setStatus(switch_action.session, .running);
                 session_interaction_component.setAttention(switch_action.session, false, now);
@@ -2631,6 +2654,7 @@ pub fn run(options: RunOptions) !void {
                 session.recordCwd(target_path) catch |err| {
                     log.warn("session {d}: failed to record cwd: {}", .{ create_action.session, err });
                 };
+                terminal_entries_mutated = true;
 
                 session_interaction_component.setStatus(create_action.session, .running);
                 session_interaction_component.setAttention(create_action.session, false, now);
@@ -2705,6 +2729,7 @@ pub fn run(options: RunOptions) !void {
                     ui.showToast("Could not change directory", now);
                     continue;
                 };
+                terminal_entries_mutated = true;
 
                 // Note: appendRecentFolder is handled by the per-frame updateCwd loop
                 // to avoid double-counting when cwd changes are detected
@@ -2941,7 +2966,14 @@ pub fn run(options: RunOptions) !void {
     if (builtin.os.tag == .macos) {
         const now = std.time.milliTimestamp();
         for (sessions) |session| {
-            session.updateCwd(now);
+            const prev_cwd_ptr = if (session.cwd_path) |p| p.ptr else null;
+            session.updateCwdNow(now);
+            if (session.cwd_path) |new_cwd| {
+                const changed = prev_cwd_ptr == null or prev_cwd_ptr != new_cwd.ptr;
+                if (changed and session.cwd_settled) {
+                    terminal_entries_mutated = true;
+                }
+            }
         }
 
         if (quit_teardown.active) {
@@ -2951,12 +2983,16 @@ pub fn run(options: RunOptions) !void {
             for (quit_teardown.tasks[0..quit_teardown.task_count]) |task| {
                 const session = sessions[task.session_idx];
                 session.stopQuitCapture();
+                const had_agent_metadata = session.agent_kind != null or session.agent_session_id != null or session.agent_metadata_captured;
                 if (session.agent_session_id) |sid| {
                     allocator.free(sid);
                     session.agent_session_id = null;
                 }
                 session.agent_kind = null;
                 session.agent_metadata_captured = false;
+                if (had_agent_metadata) {
+                    terminal_entries_mutated = true;
+                }
                 const text = session.quitCaptureBytes();
                 log.debug("quit teardown: session {d} extracted {d} bytes of terminal text", .{ task.session_idx, text.len });
                 if (terminal_history.extractLastUuid(text)) |uuid| {
@@ -2968,6 +3004,7 @@ pub fn run(options: RunOptions) !void {
                     };
                     if (session.agent_session_id != null) {
                         session.agent_metadata_captured = true;
+                        terminal_entries_mutated = true;
                     }
                 } else {
                     log.warn("quit teardown: session {d} agent {s} exited but no session id found in output", .{ task.session_idx, task.agent_kind.name() });
@@ -2975,6 +3012,7 @@ pub fn run(options: RunOptions) !void {
             }
         }
 
+        runtime_instance.releaseTerminalEntrySyncPolicyAfterMutation(&terminal_entry_sync_policy, terminal_entries_mutated);
         _ = runtime_instance.syncPersistenceTerminalEntriesFromSessionsWithPolicy(&persistence, sessions, allocator, terminal_entry_sync_policy) catch |err| {
             std.debug.print("Failed to refresh terminal persistence: {}\n", .{err});
         };

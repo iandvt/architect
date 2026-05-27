@@ -434,10 +434,53 @@ pub const Persistence = struct {
         if (!try absoluteFileExists(persistence_path)) {
             const legacy_path = try fs.path.join(allocator, &[_][]const u8{ config_root, "persistence.toml" });
             defer allocator.free(legacy_path);
-            return try loadFromPath(allocator, legacy_path);
+            if (!try absoluteFileExists(legacy_path)) return Persistence.init(allocator);
+
+            const persistence = try loadFromPath(allocator, legacy_path);
+            errdefer {
+                var cleanup = persistence;
+                cleanup.deinit(allocator);
+            }
+            migrateLegacyRootPersistence(allocator, persistence, persistence_path, legacy_path, config_root) catch |err| {
+                std.log.warn("failed to migrate legacy persistence into named session: {}", .{err});
+            };
+            return persistence;
         }
 
         return try loadFromPath(allocator, persistence_path);
+    }
+
+    fn migrateLegacyRootPersistence(
+        allocator: std.mem.Allocator,
+        persistence: Persistence,
+        session_path: []const u8,
+        legacy_path: []const u8,
+        config_root: []const u8,
+    ) !void {
+        const session_dir = fs.path.dirname(session_path) orelse return error.InvalidPath;
+        try fs.cwd().makePath(session_dir);
+        try persistence.saveToPath(allocator, session_path);
+
+        const migrated_path = try legacyMigratedPath(allocator, config_root);
+        defer allocator.free(migrated_path);
+        try fs.renameAbsolute(legacy_path, migrated_path);
+    }
+
+    fn legacyMigratedPath(allocator: std.mem.Allocator, config_root: []const u8) ![]u8 {
+        var idx: usize = 0;
+        while (idx < 100) : (idx += 1) {
+            const file_name = if (idx == 0)
+                try allocator.dupe(u8, "persistence.toml.migrated")
+            else
+                try std.fmt.allocPrint(allocator, "persistence.toml.migrated.{d}", .{idx});
+            defer allocator.free(file_name);
+
+            const path = try fs.path.join(allocator, &[_][]const u8{ config_root, file_name });
+
+            if (!try absoluteFileExists(path)) return path;
+            allocator.free(path);
+        }
+        return error.NoAvailableMigrationPath;
     }
 
     fn absoluteFileExists(path: []const u8) !bool {
@@ -1420,7 +1463,7 @@ test "Persistence.persistencePathForSessionUnderConfigRoot nests by channel and 
     try std.testing.expectEqualStrings("/tmp/architect-config/instances/Stable/HappyOtter/persistence.toml", path);
 }
 
-test "Persistence.loadForSessionUnderConfigRoot falls back to legacy root persistence" {
+test "Persistence.loadForSessionUnderConfigRoot migrates legacy root persistence once" {
     const allocator = std.testing.allocator;
 
     var tmp_dir = std.testing.tmpDir(.{});
@@ -1445,6 +1488,16 @@ test "Persistence.loadForSessionUnderConfigRoot falls back to legacy root persis
     try std.testing.expectEqualStrings("/legacy", loaded.terminal_entries.items[0].path);
     try std.testing.expectEqualStrings("codex", loaded.terminal_entries.items[0].agent_type.?);
     try std.testing.expectEqualStrings("legacy-session", loaded.terminal_entries.items[0].agent_session_id.?);
+    try std.testing.expect(!(try Persistence.absoluteFileExists(legacy_path)));
+
+    const migrated_path = try fs.path.join(allocator, &[_][]const u8{ tmp_path, "persistence.toml.migrated" });
+    defer allocator.free(migrated_path);
+    try std.testing.expect(try Persistence.absoluteFileExists(migrated_path));
+
+    var fresh = try Persistence.loadForSessionUnderConfigRoot(allocator, tmp_path, "Stable", "FreshSession");
+    defer fresh.deinit(allocator);
+    try std.testing.expectEqual(@as(c_int, 14), fresh.font_size);
+    try std.testing.expectEqual(@as(usize, 0), fresh.terminal_entries.items.len);
 
     const session_path = try Persistence.persistencePathForSessionUnderConfigRoot(allocator, tmp_path, "Stable", "HappyOtter");
     defer allocator.free(session_path);
