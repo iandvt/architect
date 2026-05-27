@@ -53,6 +53,7 @@ pub const UiAction = union(enum) {
     RequestCollapseFocused: void,
     ConfirmQuit: void,
     OpenConfig: void,
+    OpenNamedSession: []const u8,
     SwitchWorktree: SwitchWorktreeAction,
     CreateWorktree: CreateWorktreeAction,
     RemoveWorktree: RemoveWorktreeAction,

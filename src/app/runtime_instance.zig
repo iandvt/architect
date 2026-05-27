@@ -1,5 +1,6 @@
 const std = @import("std");
 const builtin = @import("builtin");
+const toml = @import("toml");
 const config_mod = @import("../config.zig");
 const session_state = @import("../session/state.zig");
 const terminal_history = @import("terminal_history.zig");
@@ -12,6 +13,76 @@ pub const RunOptions = struct {
     session_id: []const u8,
     session_display_name: []const u8,
     session_emoji: []const u8 = "",
+};
+
+pub const SavedSessionEntry = struct {
+    channel: []const u8,
+    id: []const u8,
+    display_name: []const u8,
+    emoji: []const u8,
+    terminal_count: usize,
+    updated_ns: i128,
+
+    fn deinit(self: *SavedSessionEntry, allocator: std.mem.Allocator) void {
+        allocator.free(self.channel);
+        allocator.free(self.id);
+        allocator.free(self.display_name);
+        allocator.free(self.emoji);
+        self.* = undefined;
+    }
+};
+
+fn dupeSavedSessionEntry(
+    allocator: std.mem.Allocator,
+    channel: []const u8,
+    id: []const u8,
+    display_name: []const u8,
+    emoji: []const u8,
+) !SavedSessionEntry {
+    const channel_copy = try allocator.dupe(u8, channel);
+    errdefer allocator.free(channel_copy);
+    const id_copy = try allocator.dupe(u8, id);
+    errdefer allocator.free(id_copy);
+    const display_name_copy = try allocator.dupe(u8, display_name);
+    errdefer allocator.free(display_name_copy);
+    const emoji_copy = try allocator.dupe(u8, emoji);
+    errdefer allocator.free(emoji_copy);
+
+    return .{
+        .channel = channel_copy,
+        .id = id_copy,
+        .display_name = display_name_copy,
+        .emoji = emoji_copy,
+        .terminal_count = 0,
+        .updated_ns = 0,
+    };
+}
+
+pub const SavedSessionList = struct {
+    allocator: std.mem.Allocator,
+    items: std.ArrayListUnmanaged(SavedSessionEntry) = .empty,
+
+    pub fn deinit(self: *SavedSessionList) void {
+        for (self.items.items) |*entry| {
+            entry.deinit(self.allocator);
+        }
+        self.items.deinit(self.allocator);
+        self.* = .{ .allocator = self.allocator };
+    }
+
+    pub fn findById(self: *const SavedSessionList, id: []const u8) ?SavedSessionEntry {
+        for (self.items.items) |entry| {
+            if (std.mem.eql(u8, entry.id, id)) return entry;
+        }
+        return null;
+    }
+};
+
+const TomlInstanceMetadata = struct {
+    channel: ?[]const u8 = null,
+    id: ?[]const u8 = null,
+    display_name: ?[]const u8 = null,
+    emoji: ?[]const u8 = null,
 };
 
 pub fn windowTitleForSession(
@@ -60,6 +131,169 @@ pub fn windowTitleForSession(
 pub fn restoredTerminalEntriesForStartup(persistence: *const config_mod.Persistence) []const config_mod.Persistence.TerminalEntry {
     if (builtin.os.tag != .macos) return &.{};
     return persistence.terminal_entries.items;
+}
+
+pub fn listSavedSessionsForChannel(allocator: std.mem.Allocator, channel_name: []const u8) !SavedSessionList {
+    const config_root = try config_mod.Persistence.getConfigRootPath(allocator);
+    defer allocator.free(config_root);
+    return try listSavedSessionsForChannelUnderConfigRoot(allocator, config_root, channel_name);
+}
+
+pub fn listSavedSessionsForChannelUnderConfigRoot(
+    allocator: std.mem.Allocator,
+    config_root: []const u8,
+    channel_name: []const u8,
+) !SavedSessionList {
+    var result = SavedSessionList{ .allocator = allocator };
+    errdefer result.deinit();
+
+    const channel_dir_name = try config_mod.Persistence.pathComponentForName(allocator, channel_name);
+    defer allocator.free(channel_dir_name);
+
+    const channel_dir_path = try std.fs.path.join(allocator, &.{ config_root, "instances", channel_dir_name });
+    defer allocator.free(channel_dir_path);
+
+    var dir = std.fs.openDirAbsolute(channel_dir_path, .{ .iterate = true }) catch |err| switch (err) {
+        error.FileNotFound => return result,
+        else => return err,
+    };
+    defer dir.close();
+
+    var iter = dir.iterate();
+    while (try iter.next()) |entry| {
+        if (entry.kind != .directory) continue;
+
+        const instance_path = try std.fs.path.join(allocator, &.{ channel_dir_path, entry.name, "instance.toml" });
+        defer allocator.free(instance_path);
+        const persistence_path = try std.fs.path.join(allocator, &.{ channel_dir_path, entry.name, "persistence.toml" });
+        defer allocator.free(persistence_path);
+
+        var saved = try loadSavedSessionEntry(allocator, channel_name, entry.name, instance_path);
+        errdefer saved.deinit(allocator);
+        saved.terminal_count = terminalCountFromPersistencePath(allocator, persistence_path);
+        saved.updated_ns = fileMtime(persistence_path) orelse fileMtime(instance_path) orelse 0;
+        try result.items.append(allocator, saved);
+    }
+
+    std.sort.block(SavedSessionEntry, result.items.items, {}, savedSessionLessThan);
+    return result;
+}
+
+fn loadSavedSessionEntry(
+    allocator: std.mem.Allocator,
+    channel_name: []const u8,
+    fallback_id: []const u8,
+    instance_path: []const u8,
+) !SavedSessionEntry {
+    const file = std.fs.openFileAbsolute(instance_path, .{}) catch |err| switch (err) {
+        error.FileNotFound => return fallbackSavedSessionEntry(allocator, channel_name, fallback_id),
+        else => return err,
+    };
+    defer file.close();
+
+    const content = try file.readToEndAlloc(allocator, 64 * 1024);
+    defer allocator.free(content);
+
+    var parser = toml.Parser(TomlInstanceMetadata).init(allocator);
+    defer parser.deinit();
+
+    var parsed = parser.parseString(content) catch {
+        return fallbackSavedSessionEntry(allocator, channel_name, fallback_id);
+    };
+    defer parsed.deinit();
+
+    const parsed_channel = parsed.value.channel orelse channel_name;
+    const parsed_id = parsed.value.id orelse fallback_id;
+    const parsed_display = parsed.value.display_name orelse parsed_id;
+    const parsed_emoji = parsed.value.emoji orelse "";
+
+    return try dupeSavedSessionEntry(
+        allocator,
+        parsed_channel,
+        parsed_id,
+        if (parsed_display.len > 0) parsed_display else parsed_id,
+        parsed_emoji,
+    );
+}
+
+fn fallbackSavedSessionEntry(
+    allocator: std.mem.Allocator,
+    channel_name: []const u8,
+    fallback_id: []const u8,
+) !SavedSessionEntry {
+    return try dupeSavedSessionEntry(allocator, channel_name, fallback_id, fallback_id, "");
+}
+
+fn terminalCountFromPersistencePath(allocator: std.mem.Allocator, persistence_path: []const u8) usize {
+    var persistence = config_mod.Persistence.loadFromPath(allocator, persistence_path) catch return 0;
+    defer persistence.deinit(allocator);
+    return persistence.terminal_entries.items.len;
+}
+
+fn fileMtime(path: []const u8) ?i128 {
+    const file = std.fs.openFileAbsolute(path, .{}) catch return null;
+    defer file.close();
+    const stat = file.stat() catch return null;
+    return stat.mtime;
+}
+
+fn savedSessionLessThan(_: void, lhs: SavedSessionEntry, rhs: SavedSessionEntry) bool {
+    if (lhs.updated_ns != rhs.updated_ns) return lhs.updated_ns > rhs.updated_ns;
+    return std.mem.order(u8, lhs.id, rhs.id) == .lt;
+}
+
+pub fn appBundlePathFromExecutable(allocator: std.mem.Allocator, executable_path: []const u8) !?[]u8 {
+    const marker = ".app/Contents/MacOS/";
+    const marker_index = std.mem.indexOf(u8, executable_path, marker) orelse return null;
+    return try allocator.dupe(u8, executable_path[0 .. marker_index + ".app".len]);
+}
+
+pub fn launchSessionInNewWindow(allocator: std.mem.Allocator, options: RunOptions, session_id: []const u8) !void {
+    const executable_path = try std.fs.selfExePathAlloc(allocator);
+    defer allocator.free(executable_path);
+
+    if (builtin.os.tag == .macos) {
+        if (try appBundlePathFromExecutable(allocator, executable_path)) |app_path| {
+            defer allocator.free(app_path);
+            var child = std.process.Child.init(&.{ "open", "-n", app_path, "--args", "--instance", options.channel_name, "--session", session_id }, allocator);
+            try spawnAndReapDetached(&child);
+            return;
+        }
+    }
+
+    var child = std.process.Child.init(&.{ executable_path, "--instance", options.channel_name, "--session", session_id }, allocator);
+    try spawnAndReapDetached(&child);
+}
+
+fn spawnAndReapDetached(child: *std.process.Child) !void {
+    const waiter_allocator = std.heap.page_allocator;
+    const waiter = try waiter_allocator.create(DetachedChildWaiter);
+    errdefer waiter_allocator.destroy(waiter);
+
+    try child.spawn();
+    waiter.* = .{
+        .allocator = waiter_allocator,
+        .child = child.*,
+    };
+    const thread = std.Thread.spawn(.{}, waitDetachedChild, .{waiter}) catch |err| {
+        _ = waiter.child.kill() catch |kill_err| {
+            log.warn("failed to terminate saved-session child after waiter spawn failure: {}", .{kill_err});
+        };
+        return err;
+    };
+    thread.detach();
+}
+
+const DetachedChildWaiter = struct {
+    allocator: std.mem.Allocator,
+    child: std.process.Child,
+};
+
+fn waitDetachedChild(waiter: *DetachedChildWaiter) void {
+    defer waiter.allocator.destroy(waiter);
+    _ = waiter.child.wait() catch |err| {
+        log.warn("failed to reap launched saved-session child: {}", .{err});
+    };
 }
 
 pub fn seedSessionAgentMetadataFromEntry(
@@ -248,6 +482,121 @@ test "prefillManualResumeCommandFromEntry queues resume command without newline"
 
     try std.testing.expect(prefillManualResumeCommandFromEntry(allocator, &session, entry));
     try std.testing.expectEqualStrings("codex resume abc-123", session.pending_write.items);
+}
+
+test "listSavedSessionsForChannelUnderConfigRoot reads metadata and terminal counts" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const tmp_path = try tmp_dir.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(tmp_path);
+
+    try tmp_dir.dir.makePath("instances/Stable/Alpha");
+    try tmp_dir.dir.makePath("instances/Stable/Beta");
+    try tmp_dir.dir.makePath("instances/Scratch/Other");
+
+    {
+        var file = try tmp_dir.dir.createFile("instances/Stable/Alpha/instance.toml", .{});
+        defer file.close();
+        try file.writeAll(
+            \\channel = "Stable"
+            \\id = "Alpha"
+            \\display_name = "Alpha Display"
+            \\emoji = ""
+            \\
+        );
+    }
+    {
+        var file = try tmp_dir.dir.createFile("instances/Stable/Alpha/persistence.toml", .{});
+        defer file.close();
+        try file.writeAll(
+            \\font_size = 14
+            \\terminals = ["/one", "/two"]
+            \\[window]
+            \\height = 800
+            \\width = 1200
+            \\x = 10
+            \\y = 20
+            \\
+        );
+    }
+    {
+        var file = try tmp_dir.dir.createFile("instances/Stable/Beta/persistence.toml", .{});
+        defer file.close();
+        try file.writeAll(
+            \\font_size = 14
+            \\terminals = ["/three"]
+            \\[window]
+            \\height = 800
+            \\width = 1200
+            \\x = 10
+            \\y = 20
+            \\
+        );
+    }
+    {
+        var file = try tmp_dir.dir.createFile("instances/Scratch/Other/instance.toml", .{});
+        defer file.close();
+        try file.writeAll(
+            \\channel = "Scratch"
+            \\id = "Other"
+            \\display_name = "Other"
+            \\emoji = ""
+            \\
+        );
+    }
+
+    var sessions = try listSavedSessionsForChannelUnderConfigRoot(allocator, tmp_path, "Stable");
+    defer sessions.deinit();
+
+    try std.testing.expectEqual(@as(usize, 2), sessions.items.items.len);
+
+    const alpha = sessions.findById("Alpha") orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqualStrings("Stable", alpha.channel);
+    try std.testing.expectEqualStrings("Alpha", alpha.id);
+    try std.testing.expectEqualStrings("Alpha Display", alpha.display_name);
+    try std.testing.expectEqual(@as(usize, 2), alpha.terminal_count);
+
+    const beta = sessions.findById("Beta") orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqualStrings("Stable", beta.channel);
+    try std.testing.expectEqualStrings("Beta", beta.id);
+    try std.testing.expectEqualStrings("Beta", beta.display_name);
+    try std.testing.expectEqual(@as(usize, 1), beta.terminal_count);
+}
+
+test "dupeSavedSessionEntry releases partial allocations on failure" {
+    var fail_index: usize = 0;
+    while (fail_index < 4) : (fail_index += 1) {
+        var failing_state = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = fail_index });
+        const failing_allocator = failing_state.allocator();
+
+        try std.testing.expectError(error.OutOfMemory, dupeSavedSessionEntry(
+            failing_allocator,
+            "Stable",
+            "Alpha",
+            "Alpha Display",
+            "ship",
+        ));
+        try std.testing.expectEqual(failing_state.allocated_bytes, failing_state.freed_bytes);
+    }
+}
+
+test "appBundlePathFromExecutable extracts enclosing app bundle" {
+    const allocator = std.testing.allocator;
+
+    const path = try appBundlePathFromExecutable(
+        allocator,
+        "/Applications/Architect (Stable).app/Contents/MacOS/architect",
+    );
+    defer if (path) |p| allocator.free(p);
+
+    try std.testing.expect(path != null);
+    try std.testing.expectEqualStrings("/Applications/Architect (Stable).app", path.?);
+
+    const direct = try appBundlePathFromExecutable(allocator, "/tmp/architect");
+    try std.testing.expect(direct == null);
 }
 
 test "seedSessionAgentMetadataFromEntry seeds known restored metadata" {

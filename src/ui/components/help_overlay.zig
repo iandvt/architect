@@ -20,6 +20,7 @@ const shortcuts = [_]Shortcut{
     .{ .key = "⌘N", .desc = "Spawn new terminal" },
     .{ .key = "⌘⇧+ / ⌘⇧-", .desc = "Adjust font size" },
     .{ .key = "⌘⇧R / ⌘T", .desc = "Reader / remote terminal" },
+    .{ .key = "⌘⇧S", .desc = "Open saved sessions" },
     .{ .key = "⌘W", .desc = "Delete terminal" },
     .{ .key = "⌘,", .desc = "Open config file" },
     .{ .key = "Drag (full view)", .desc = "Select text" },
@@ -54,7 +55,7 @@ pub const HelpOverlayComponent = struct {
     cache: ?*Cache = null,
     first_frame: FirstFrameGuard = .{},
     const help_button_size_small: c_int = 40;
-    const help_button_size_large: c_int = 440;
+    const help_button_size_large: c_int = 480;
     const help_button_margin: c_int = 20;
     const help_button_animation_duration_ms: i64 = 200;
     const line_height: c_int = 28;

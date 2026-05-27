@@ -1464,6 +1464,29 @@ pub fn run(options: RunOptions) !void {
     try ui.register(recent_folders_component);
     recent_folders_comp_ptr.setFolders(persistence.getRecentFolders());
 
+    const session_picker_comp_ptr = try ui_mod.session_picker_overlay.SessionPickerOverlayComponent.init(allocator);
+    try ui.register(session_picker_comp_ptr.asComponent());
+    var saved_sessions = runtime_instance.listSavedSessionsForChannel(allocator, options.channel_name) catch |err| blk: {
+        log.warn("failed to list saved sessions for {s}: {}", .{ options.channel_name, err });
+        break :blk runtime_instance.SavedSessionList{ .allocator = allocator };
+    };
+    defer saved_sessions.deinit();
+    for (saved_sessions.items.items) |saved| {
+        if (std.mem.eql(u8, saved.id, options.session_id)) continue;
+
+        const label = if (saved.emoji.len > 0)
+            try std.fmt.allocPrint(allocator, "{s} {s}", .{ saved.emoji, saved.display_name })
+        else
+            try allocator.dupe(u8, saved.display_name);
+        defer allocator.free(label);
+
+        const terminal_word = if (saved.terminal_count == 1) "terminal" else "terminals";
+        const detail = try std.fmt.allocPrint(allocator, "{s} - {d} {s}", .{ saved.id, saved.terminal_count, terminal_word });
+        defer allocator.free(detail);
+
+        try session_picker_comp_ptr.addSession(saved.id, label, detail);
+    }
+
     const help_comp_ptr = try allocator.create(ui_mod.help_overlay.HelpOverlayComponent);
     help_comp_ptr.* = .{ .allocator = allocator };
     const help_component = ui_mod.UiComponent{
@@ -1473,7 +1496,7 @@ pub fn run(options: RunOptions) !void {
     };
     try ui.register(help_component);
 
-    const pill_group_component = try ui_mod.pill_group.PillGroupComponent.create(allocator, help_comp_ptr, recent_folders_comp_ptr, worktree_comp_ptr);
+    const pill_group_component = try ui_mod.pill_group.PillGroupComponent.create(allocator, help_comp_ptr, recent_folders_comp_ptr, worktree_comp_ptr, session_picker_comp_ptr);
     try ui.register(pill_group_component);
     const toast_component = try ui_mod.toast.ToastComponent.init(allocator);
     try ui.register(toast_component.asComponent());
@@ -2590,6 +2613,16 @@ pub fn run(options: RunOptions) !void {
                 } else |err| {
                     std.debug.print("Failed to get config path: {}\n", .{err});
                 }
+            },
+            .OpenNamedSession => |session_id| {
+                defer allocator.free(session_id);
+                runtime_instance.launchSessionInNewWindow(allocator, options, session_id) catch |err| {
+                    log.warn("failed to open saved session {s}/{s}: {}", .{ options.channel_name, session_id, err });
+                    ui.showToast("Could not open saved session", now);
+                    continue;
+                };
+                ui.showToast("Opening saved session", now);
+                if (config.ui.show_hotkey_feedback) ui.showHotkey("⌘⇧S", now);
             },
             .SwitchWorktree => |switch_action| {
                 defer allocator.free(switch_action.path);

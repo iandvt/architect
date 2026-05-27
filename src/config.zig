@@ -427,7 +427,7 @@ pub const Persistence = struct {
         return try loadFromPath(allocator, persistence_path);
     }
 
-    fn loadFromPath(allocator: std.mem.Allocator, persistence_path: []const u8) !Persistence {
+    pub fn loadFromPath(allocator: std.mem.Allocator, persistence_path: []const u8) !Persistence {
         const file = fs.openFileAbsolute(persistence_path, .{}) catch |err| {
             return switch (err) {
                 error.FileNotFound => Persistence.init(allocator),

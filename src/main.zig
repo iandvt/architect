@@ -33,6 +33,8 @@ test {
     _ = @import("input/mapper.zig");
     _ = @import("ui/components/command_overlay.zig");
     _ = @import("ui/components/diff_comment_layout.zig");
+    _ = @import("ui/components/session_picker_overlay.zig");
+    _ = @import("ui/components/pill_group.zig");
 }
 
 test "new terminal grid split starts stacked" {
