@@ -1,5 +1,6 @@
 const std = @import("std");
 const app_state = @import("../app/app_state.zig");
+const c = @import("../c.zig");
 const font_mod = @import("../font.zig");
 const colors = @import("../colors.zig");
 const font_cache = @import("../font_cache.zig");
@@ -42,6 +43,10 @@ pub const UiHost = struct {
     mouse_over_ui: bool = false,
 };
 
+pub fn canHandleEscapePress(mode: app_state.ViewMode) bool {
+    return mode != .Grid and mode != .Collapsing and mode != .GridResizing;
+}
+
 pub const UiAction = union(enum) {
     RestartSession: usize,
     FocusSession: usize,
@@ -56,6 +61,10 @@ pub const UiAction = union(enum) {
     ToggleMetrics: void,
     ToggleDiffOverlay: void,
     ToggleReaderOverlay: void,
+    ToggleCommandOverlay: void,
+    CommandOverlayKey: CommandOverlayKeyAction,
+    CommandOverlayPaste: void,
+    CommandOverlayTextInput: []const u8,
     SendDiffComments: SendDiffCommentsAction,
     OpenStory: OpenStoryAction,
 };
@@ -81,6 +90,11 @@ pub const ChangeDirAction = struct {
     path: []const u8,
 };
 
+pub const CommandOverlayKeyAction = struct {
+    key: c.SDL_Keycode,
+    mod: c.SDL_Keymod,
+};
+
 pub const SendDiffCommentsAction = struct {
     session: usize,
     /// Heap-allocated; ownership transfers to runtime, which frees after send.
@@ -96,6 +110,7 @@ pub const OpenStoryAction = struct {
 
 pub const UiAssets = struct {
     ui_font: ?*font_mod.Font = null,
+    terminal_font: ?*font_mod.Font = null,
     font_cache: ?*font_cache.FontCache = null,
 };
 

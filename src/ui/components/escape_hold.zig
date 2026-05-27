@@ -1,6 +1,5 @@
 const std = @import("std");
 const c = @import("../../c.zig");
-const input = @import("../../input/mapper.zig");
 const font_mod = @import("../../font.zig");
 const types = @import("../types.zig");
 const UiComponent = @import("../component.zig").UiComponent;
@@ -51,7 +50,7 @@ pub const EscapeHoldComponent = struct {
         switch (event.type) {
             c.SDL_EVENT_KEY_DOWN => {
                 if (event.key.key == c.SDLK_ESCAPE) {
-                    if (!input.canHandleEscapePress(host.view_mode)) return false;
+                    if (!types.canHandleEscapePress(host.view_mode)) return false;
                     if (!event.key.repeat) {
                         self.gesture.start(host.now_ms, esc_hold_total_ms);
                         self.first_frame.markTransition();

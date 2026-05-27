@@ -26,10 +26,12 @@ pub fn main() !void {
 
 test {
     _ = @import("cli.zig");
+    _ = @import("app/command_overlay.zig");
     _ = @import("app/layout.zig");
     _ = @import("app/runtime.zig");
     _ = @import("app/runtime_instance.zig");
     _ = @import("input/mapper.zig");
+    _ = @import("ui/components/command_overlay.zig");
     _ = @import("ui/components/diff_comment_layout.zig");
 }
 

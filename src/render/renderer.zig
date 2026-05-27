@@ -1064,6 +1064,39 @@ fn renderSessionCached(
     cache_entry.presented_epoch = session.render_epoch;
 }
 
+pub fn renderSessionIntoRect(
+    renderer: *c.SDL_Renderer,
+    session: *SessionState,
+    view: *SessionViewState,
+    cache_entry: *RenderCache.Entry,
+    rect: Rect,
+    font: *font_mod.Font,
+    current_time_ms: i64,
+    theme: *const colors.Theme,
+    ui_scale: f32,
+) RenderError!void {
+    const dims = sessionTermDims(session, session.pty_size.ws_col, session.pty_size.ws_row);
+    try renderSessionCached(
+        renderer,
+        session,
+        view,
+        cache_entry,
+        rect,
+        1.0,
+        true,
+        false,
+        false,
+        null,
+        font,
+        dims.cols,
+        dims.rows,
+        current_time_ms,
+        false,
+        theme,
+        ui_scale,
+    );
+}
+
 /// Render the cached tile texture in horizontal strips with per-strip wave scaling.
 /// The wave sweeps from bottom to top: bottom strips animate first, top strips last.
 /// Only the width of each strip is scaled (centered horizontally), preserving vertical layout.

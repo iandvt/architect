@@ -12,6 +12,7 @@ const input_text = @import("input_text.zig");
 const layout = @import("layout.zig");
 const terminal_actions = @import("terminal_actions.zig");
 const runtime_instance = @import("runtime_instance.zig");
+const command_overlay_mod = @import("command_overlay.zig");
 const ui_host = @import("ui_host.zig");
 const worktree = @import("worktree.zig");
 const control = @import("control.zig");
@@ -372,6 +373,7 @@ fn compactSessions(
     sessions: []*SessionState,
     views: []SessionViewState,
     render_cache: *renderer_mod.RenderCache,
+    command_overlays: *command_overlay_mod.CommandOverlaySet,
     anim_state: *AnimationState,
 ) void {
     const focused_id: ?usize = if (anim_state.focused_session < sessions.len and sessions[anim_state.focused_session].spawned)
@@ -391,6 +393,7 @@ fn compactSessions(
             std.mem.swap(*SessionState, &sessions[write_idx], &sessions[idx]);
             std.mem.swap(SessionViewState, &views[write_idx], &views[idx]);
             std.mem.swap(renderer_mod.RenderCache.Entry, &render_cache.entries[write_idx], &render_cache.entries[idx]);
+            command_overlays.swapSlots(write_idx, idx);
         }
         write_idx += 1;
     }
@@ -799,6 +802,7 @@ fn reloadRuntimeFontsForScaleChange(ctx: *RuntimeScaleChangeContext) font_mod.Fo
         ctx.ui_font,
     );
     ctx.ui.assets.ui_font = ctx.ui_font;
+    ctx.ui.assets.terminal_font = ctx.font;
 }
 
 fn applyRuntimeResizeForScaleChange(ctx: *RuntimeScaleChangeContext) void {
@@ -816,14 +820,31 @@ fn applyRuntimeResizeForScaleChange(ctx: *RuntimeScaleChangeContext) void {
 
 fn handleQuitRequest(
     sessions: []const *SessionState,
+    command_overlays: *const command_overlay_mod.CommandOverlaySet,
     confirm: *ui_mod.quit_confirm.QuitConfirmComponent,
 ) bool {
-    const running_processes = countForegroundProcesses(sessions);
+    const running_processes = countForegroundProcesses(sessions) + command_overlays.foregroundProcessCount();
+    return handleQuitRequestWithProcessCount(running_processes, confirm);
+}
+
+fn handleQuitRequestWithProcessCount(
+    running_processes: usize,
+    confirm: *ui_mod.quit_confirm.QuitConfirmComponent,
+) bool {
     if (running_processes > 0) {
         confirm.show(running_processes);
         return false;
     }
     return true;
+}
+
+fn shouldConfirmDespawn(
+    idx: usize,
+    sessions: []const *SessionState,
+    command_overlays: *const command_overlay_mod.CommandOverlaySet,
+) bool {
+    if (idx >= sessions.len) return false;
+    return sessions[idx].hasForegroundProcess() or command_overlays.hasForegroundProcessAt(idx);
 }
 
 const quit_primary_wait_ms: u64 = 2500;
@@ -832,8 +853,11 @@ const quit_term_wait_ms: u64 = 500;
 const quit_capture_drain_poll_ns: u64 = 20 * std.time.ns_per_ms;
 const quit_capture_drain_quiet_ns: i128 = 250 * @as(i128, std.time.ns_per_ms);
 const quit_capture_drain_max_ns: i128 = 2500 * @as(i128, std.time.ns_per_ms);
+const max_quit_teardown_tasks = grid_layout.max_terminals * 2;
+const max_quit_teardown_threads = max_quit_teardown_tasks;
 
 const QuitTeardownTask = struct {
+    session: *SessionState,
     session_idx: usize,
     shell_pid: posix.pid_t,
     pty_master: posix.fd_t,
@@ -852,7 +876,7 @@ const QuitTeardownWorker = struct {
 
     fn run(self: *QuitTeardownWorker) void {
         defer self.done.store(true, .seq_cst);
-        var threads: [grid_layout.max_terminals]?std.Thread = [_]?std.Thread{null} ** grid_layout.max_terminals;
+        var threads: [max_quit_teardown_threads]?std.Thread = [_]?std.Thread{null} ** max_quit_teardown_threads;
         for (self.tasks, 0..) |*task, idx| {
             threads[idx] = std.Thread.spawn(.{}, runTask, .{task}) catch |err| blk: {
                 log.warn("quit teardown: failed to spawn parallel task for session {d}: {}", .{ task.session_idx, err });
@@ -893,32 +917,24 @@ const QuitTeardownWorker = struct {
 const QuitTeardownState = struct {
     active: bool = false,
     task_count: usize = 0,
-    tasks: [grid_layout.max_terminals]QuitTeardownTask = undefined,
+    tasks: [max_quit_teardown_tasks]QuitTeardownTask = undefined,
     done: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     worker: QuitTeardownWorker = undefined,
     thread: ?std.Thread = null,
 
-    fn start(self: *QuitTeardownState, sessions: []*SessionState) !bool {
+    fn start(
+        self: *QuitTeardownState,
+        sessions: []*SessionState,
+        command_overlays: *command_overlay_mod.CommandOverlaySet,
+    ) !bool {
         if (self.active) return true;
 
         self.task_count = 0;
         for (sessions, 0..) |session, idx| {
-            const agent_kind = session.detectForegroundAgent() orelse continue;
-            const shell_pid = session.shellPid() orelse continue;
-            const pty_master = session.ptyMasterFd() orelse continue;
-
-            var task = QuitTeardownTask{
-                .session_idx = idx,
-                .shell_pid = shell_pid,
-                .pty_master = pty_master,
-                .agent_kind = agent_kind,
-            };
-            const copied_path = session.copyPtySlavePath(task.slave_path[0..]) orelse continue;
-            task.slave_path_len = copied_path.len;
-
-            session.startQuitCapture();
-            self.tasks[self.task_count] = task;
-            self.task_count += 1;
+            self.appendTask(session, idx);
+        }
+        for (command_overlays.overlays, 0..) |overlay, idx| {
+            self.appendTask(&overlay.session, sessions.len + idx);
         }
 
         if (self.task_count == 0) return false;
@@ -931,6 +947,30 @@ const QuitTeardownState = struct {
         self.thread = try std.Thread.spawn(.{}, workerMain, .{&self.worker});
         self.active = true;
         return true;
+    }
+
+    fn appendTask(self: *QuitTeardownState, session: *SessionState, idx: usize) void {
+        if (self.task_count >= self.tasks.len) {
+            log.warn("quit teardown: task capacity exceeded while adding session {d}", .{idx});
+            return;
+        }
+        const agent_kind = session.detectForegroundAgent() orelse return;
+        const shell_pid = session.shellPid() orelse return;
+        const pty_master = session.ptyMasterFd() orelse return;
+
+        var task = QuitTeardownTask{
+            .session = session,
+            .session_idx = idx,
+            .shell_pid = shell_pid,
+            .pty_master = pty_master,
+            .agent_kind = agent_kind,
+        };
+        const copied_path = session.copyPtySlavePath(task.slave_path[0..]) orelse return;
+        task.slave_path_len = copied_path.len;
+
+        session.startQuitCapture();
+        self.tasks[self.task_count] = task;
+        self.task_count += 1;
     }
 
     fn isFinished(self: *const QuitTeardownState) bool {
@@ -974,12 +1014,12 @@ fn foregroundPgrp(slave_path_z: [:0]const u8, shell_pid: posix.pid_t) ?posix.pid
     return fg_pgrp;
 }
 
-fn drainQuitCaptureOutput(tasks: []const QuitTeardownTask, sessions: []const *SessionState) void {
+fn drainQuitCaptureOutput(tasks: []const QuitTeardownTask) void {
     if (tasks.len == 0) return;
 
-    var last_capture_lengths: [grid_layout.max_terminals]usize = [_]usize{0} ** grid_layout.max_terminals;
+    var last_capture_lengths: [max_quit_teardown_tasks]usize = [_]usize{0} ** max_quit_teardown_tasks;
     for (tasks, 0..) |task, idx| {
-        last_capture_lengths[idx] = sessions[task.session_idx].quitCaptureBytes().len;
+        last_capture_lengths[idx] = task.session.quitCaptureBytes().len;
     }
 
     const start_ns = std.time.nanoTimestamp();
@@ -988,7 +1028,7 @@ fn drainQuitCaptureOutput(tasks: []const QuitTeardownTask, sessions: []const *Se
     while (true) {
         var saw_growth = false;
         for (tasks, 0..) |task, idx| {
-            const session = sessions[task.session_idx];
+            const session = task.session;
             session.processOutput() catch |err| {
                 log.warn("quit teardown: session {d} post-worker output drain failed: {}", .{ task.session_idx, err });
             };
@@ -1018,11 +1058,12 @@ fn shouldContinueQuitCaptureDrain(start_ns: i128, last_growth_ns: i128, now_ns: 
 fn startQuitFlow(
     quit_state: *QuitTeardownState,
     sessions: []*SessionState,
+    command_overlays: *command_overlay_mod.CommandOverlaySet,
     overlay: *ui_mod.quit_blocking_overlay.QuitBlockingOverlayComponent,
 ) bool {
     if (builtin.os.tag != .macos) return true;
     if (quit_state.active) return false;
-    const started = quit_state.start(sessions) catch |err| {
+    const started = quit_state.start(sessions, command_overlays) catch |err| {
         log.warn("quit teardown: failed to start worker thread: {}", .{err});
         return true;
     };
@@ -1265,6 +1306,7 @@ pub fn run(options: RunOptions) !void {
     var ui_deinitialized = false;
     errdefer if (markTeardownComplete(&ui_deinitialized)) ui.deinit(renderer);
     ui.assets.ui_font = &ui_font;
+    ui.assets.terminal_font = &font;
     ui.assets.font_cache = &ui_font_cache;
 
     var window_x: c_int = persistence.window.x;
@@ -1368,6 +1410,8 @@ pub fn run(options: RunOptions) !void {
 
     var render_cache = try renderer_mod.RenderCache.init(allocator, grid_layout.max_terminals);
     defer render_cache.deinit();
+    var command_overlays = try command_overlay_mod.CommandOverlaySet.init(allocator, grid_layout.max_terminals, shell_path, size, notify_sock, theme);
+    defer command_overlays.deinit();
 
     var foreground_cache = ForegroundProcessCache{};
 
@@ -1457,6 +1501,8 @@ pub fn run(options: RunOptions) !void {
     try ui.register(diff_overlay_component.asComponent());
     const reader_overlay_component = try ui_mod.reader_overlay.ReaderOverlayComponent.init(allocator, sessions);
     try ui.register(reader_overlay_component.asComponent());
+    const command_overlay_component = try ui_mod.command_overlay.CommandOverlayComponent.init(allocator, &command_overlays);
+    try ui.register(command_overlay_component.asComponent());
     const story_overlay_component = try ui_mod.story_overlay.StoryOverlayComponent.init(allocator);
     try ui.register(story_overlay_component.asComponent());
 
@@ -1537,8 +1583,8 @@ pub fn run(options: RunOptions) !void {
             switch (scaled_event.type) {
                 c.SDL_EVENT_QUIT => {
                     if (quit_teardown.active) continue;
-                    if (handleQuitRequest(sessions[0..], quit_confirm_component)) {
-                        if (startQuitFlow(&quit_teardown, sessions[0..], quit_blocking_overlay_component)) {
+                    if (handleQuitRequest(sessions[0..], &command_overlays, quit_confirm_component)) {
+                        if (startQuitFlow(&quit_teardown, sessions[0..], &command_overlays, quit_blocking_overlay_component)) {
                             running = false;
                         }
                     }
@@ -1550,8 +1596,8 @@ pub fn run(options: RunOptions) !void {
                         window_close_suppress_countdown = 0;
                         continue;
                     }
-                    if (handleQuitRequest(sessions[0..], quit_confirm_component)) {
-                        if (startQuitFlow(&quit_teardown, sessions[0..], quit_blocking_overlay_component)) {
+                    if (handleQuitRequest(sessions[0..], &command_overlays, quit_confirm_component)) {
+                        if (startQuitFlow(&quit_teardown, sessions[0..], &command_overlays, quit_blocking_overlay_component)) {
                             running = false;
                         }
                     }
@@ -1712,8 +1758,8 @@ pub fn run(options: RunOptions) !void {
                     if (has_gui and !has_blocking_mod and key == c.SDLK_Q) {
                         if (quit_teardown.active) continue;
                         if (config.ui.show_hotkey_feedback) ui.showHotkey("⌘Q", now);
-                        if (handleQuitRequest(sessions[0..], quit_confirm_component)) {
-                            if (startQuitFlow(&quit_teardown, sessions[0..], quit_blocking_overlay_component)) {
+                        if (handleQuitRequest(sessions[0..], &command_overlays, quit_confirm_component)) {
+                            if (startQuitFlow(&quit_teardown, sessions[0..], &command_overlays, quit_blocking_overlay_component)) {
                                 running = false;
                             }
                         }
@@ -1730,7 +1776,7 @@ pub fn run(options: RunOptions) !void {
                             continue;
                         }
 
-                        if (session.hasForegroundProcess()) {
+                        if (shouldConfirmDespawn(session_idx, sessions[0..], &command_overlays)) {
                             confirm_dialog_component.show(
                                 "Delete Terminal?",
                                 "A process is running. Delete anyway?",
@@ -1791,10 +1837,14 @@ pub fn run(options: RunOptions) !void {
 
                             // Close the terminal
                             session.despawn(allocator);
+                            command_overlays.despawnAt(session_idx);
+                            if (!command_overlays.isVisible()) {
+                                command_overlay_component.setOpen(false, now);
+                            }
                             session_interaction_component.resetView(session_idx);
                             session.markDirty();
 
-                            compactSessions(sessions, session_interaction_component.viewSlice(), &render_cache, &anim_state);
+                            compactSessions(sessions, session_interaction_component.viewSlice(), &render_cache, &command_overlays, &anim_state);
 
                             // Count remaining spawned sessions after closing
                             const remaining_count = countSpawnedSessions(sessions);
@@ -2085,7 +2135,7 @@ pub fn run(options: RunOptions) !void {
                                 ui.showToast("All terminals in use", now);
                             }
                         }
-                    } else if (input.commandGridNavShortcut(key, mod, anim_state.mode)) |direction| {
+                    } else if (if (anim_state.mode == .Full) input.gridNavShortcut(key, mod) else null) |direction| {
                         if (config.ui.show_hotkey_feedback) {
                             const arrow = switch (direction) {
                                 .up => "⌘↑",
@@ -2123,7 +2173,7 @@ pub fn run(options: RunOptions) !void {
                             session_interaction_component.resetScrollIfNeeded(anim_state.focused_session);
                             try input_keys.handleKeyInput(focused, key, mod);
                         }
-                    } else if (input.gridExpandShortcut(key, mod, anim_state.mode)) {
+                    } else if (anim_state.mode == .Grid and input.gridSelectShortcut(key, mod)) {
                         if (config.ui.show_hotkey_feedback) {
                             ui.showHotkey("↵", now);
                         }
@@ -2153,7 +2203,7 @@ pub fn run(options: RunOptions) !void {
                 },
                 c.SDL_EVENT_KEY_UP => {
                     const key = scaled_event.key.key;
-                    if (key == c.SDLK_ESCAPE and input.canHandleEscapePress(anim_state.mode)) {
+                    if (key == c.SDLK_ESCAPE and ui_mod.canHandleEscapePress(anim_state.mode)) {
                         const focused = sessions[anim_state.focused_session];
                         if (focused.spawned and !focused.dead and focused.shell != null) {
                             const esc_byte: [1]u8 = .{27};
@@ -2223,6 +2273,7 @@ pub fn run(options: RunOptions) !void {
             running = false;
         }
         var any_session_dirty = render_cache.anyDirty(sessions);
+        const command_overlay_dirty = command_overlays.processOutput(now);
 
         var control_requests = control_queue.drainAll();
         defer control_requests.deinit(allocator);
@@ -2364,9 +2415,13 @@ pub fn run(options: RunOptions) !void {
                         };
                     }
                     sessions[idx].despawn(allocator);
+                    command_overlays.despawnAt(idx);
+                    if (!command_overlays.isVisible()) {
+                        command_overlay_component.setOpen(false, now);
+                    }
                     session_interaction_component.resetView(idx);
                     sessions[idx].markDirty();
-                    compactSessions(sessions, session_interaction_component.viewSlice(), &render_cache, &anim_state);
+                    compactSessions(sessions, session_interaction_component.viewSlice(), &render_cache, &command_overlays, &anim_state);
                     std.debug.print("UI requested despawn: {d}\n", .{idx});
 
                     // Handle grid contraction
@@ -2511,7 +2566,7 @@ pub fn run(options: RunOptions) !void {
             },
             .ConfirmQuit => {
                 if (!quit_teardown.active) {
-                    if (startQuitFlow(&quit_teardown, sessions[0..], quit_blocking_overlay_component)) {
+                    if (startQuitFlow(&quit_teardown, sessions[0..], &command_overlays, quit_blocking_overlay_component)) {
                         running = false;
                     }
                 }
@@ -2745,6 +2800,48 @@ pub fn run(options: RunOptions) !void {
                     .unavailable => ui.showToast("Reader mode requires a selected running terminal", now),
                 }
             },
+            .ToggleCommandOverlay => {
+                if (command_overlays.isVisible()) {
+                    command_overlays.hideActive();
+                    command_overlay_component.setOpen(false, now);
+                    continue;
+                }
+
+                const terminal_rect = command_overlay_mod.terminalRect(render_width, render_height, ui_scale);
+                const overlay_size = command_overlay_mod.terminalSizeForRect(&font, terminal_rect, ui_scale);
+                const focused_cwd = if (anim_state.focused_session < sessions.len)
+                    sessions[anim_state.focused_session].cwd_path
+                else
+                    null;
+
+                command_overlays.showFor(anim_state.focused_session, focused_cwd, overlay_size, &loop) catch |err| {
+                    log.warn("failed to open command overlay: {}", .{err});
+                    ui.showToast("Could not open command overlay", now);
+                    command_overlay_component.setOpen(false, now);
+                    continue;
+                };
+                command_overlay_component.setOpen(true, now);
+                ui.showToast("Remote Terminal", now);
+                if (config.ui.show_hotkey_feedback) ui.showHotkey("⌘T", now);
+            },
+            .CommandOverlayKey => |key_action| {
+                command_overlays.sendKey(key_action.key, key_action.mod) catch |err| {
+                    log.warn("failed to send command overlay key input: {}", .{err});
+                };
+            },
+            .CommandOverlayPaste => {
+                const overlay = command_overlays.activeOverlay() orelse continue;
+                command_overlays.resetActiveScrollIfNeeded();
+                terminal_actions.pasteClipboardIntoSession(&overlay.session, allocator, &ui, now, session_interaction_component) catch |err| {
+                    log.warn("failed to paste clipboard into command overlay: {}", .{err});
+                };
+            },
+            .CommandOverlayTextInput => |text| {
+                defer allocator.free(text);
+                command_overlays.sendText(text) catch |err| {
+                    log.warn("failed to send command overlay text input: {}", .{err});
+                };
+            },
             .SendDiffComments => |dc_action| {
                 if (dc_action.session >= sessions.len) {
                     allocator.free(dc_action.comments_text);
@@ -2863,7 +2960,7 @@ pub fn run(options: RunOptions) !void {
         const animating = anim_state.mode != .Grid and anim_state.mode != .Full;
         const ui_needs_frame = ui.needsFrame(&ui_render_host);
         const last_render_stale = last_render_ns == 0 or (frame_start_ns - last_render_ns) >= max_idle_render_gap_ns;
-        const should_render = animating or any_session_dirty or ui_needs_frame or processed_event or had_notifications or had_control_requests or last_render_stale;
+        const should_render = animating or any_session_dirty or command_overlay_dirty or ui_needs_frame or processed_event or had_notifications or had_control_requests or last_render_stale;
 
         if (should_render) {
             if (relaunch_trace_frames > 0) {
@@ -2906,7 +3003,7 @@ pub fn run(options: RunOptions) !void {
             relaunch_trace_frames -= 1;
         }
 
-        const is_idle = !animating and !any_session_dirty and !ui_needs_frame and !processed_event and !had_notifications and !had_control_requests;
+        const is_idle = !animating and !any_session_dirty and !command_overlay_dirty and !ui_needs_frame and !processed_event and !had_notifications and !had_control_requests;
 
         if (window_close_suppress_countdown > 0) {
             window_close_suppress_countdown -= 1;
@@ -2926,9 +3023,9 @@ pub fn run(options: RunOptions) !void {
         if (quit_teardown.active) {
             quit_blocking_overlay_component.setActive(false);
             quit_teardown.join();
-            drainQuitCaptureOutput(quit_teardown.tasks[0..quit_teardown.task_count], sessions[0..]);
+            drainQuitCaptureOutput(quit_teardown.tasks[0..quit_teardown.task_count]);
             for (quit_teardown.tasks[0..quit_teardown.task_count]) |task| {
-                const session = sessions[task.session_idx];
+                const session = task.session;
                 session.stopQuitCapture();
                 if (session.agent_session_id) |sid| {
                     allocator.free(sid);
@@ -3035,6 +3132,108 @@ test "waitTimeoutMsFromNs rounds up to whole milliseconds" {
     try std.testing.expectEqual(@as(c_int, 0), waitTimeoutMsFromNs(0));
     try std.testing.expectEqual(@as(c_int, 1), waitTimeoutMsFromNs(std.time.ns_per_ms - 1));
     try std.testing.expectEqual(@as(c_int, 50), waitTimeoutMsFromNs((49 * std.time.ns_per_ms) + 999_999));
+}
+
+test "quit request shows combined foreground process count" {
+    var confirm = ui_mod.quit_confirm.QuitConfirmComponent{
+        .allocator = std.testing.allocator,
+    };
+
+    try std.testing.expect(!handleQuitRequestWithProcessCount(2, &confirm));
+    try std.testing.expect(confirm.visible);
+    try std.testing.expectEqual(@as(usize, 2), confirm.process_count);
+
+    confirm.visible = false;
+    try std.testing.expect(handleQuitRequestWithProcessCount(0, &confirm));
+    try std.testing.expect(!confirm.visible);
+}
+
+test "despawn confirmation includes paired command overlay foreground process" {
+    const allocator = std.testing.allocator;
+    const theme = colors_mod.Theme.default();
+
+    var session = try SessionState.init(allocator, 0, "/bin/sh", .{}, "", theme);
+    defer session.deinit(allocator);
+    session.spawned = true;
+    var sessions = [_]*SessionState{&session};
+
+    var command_overlays = try command_overlay_mod.CommandOverlaySet.init(allocator, 1, "/bin/sh", .{}, "", theme);
+    defer command_overlays.deinit();
+
+    try std.testing.expect(!shouldConfirmDespawn(0, sessions[0..], &command_overlays));
+
+    command_overlays.overlays[0].session.has_foreground_process_override = true;
+
+    try std.testing.expect(shouldConfirmDespawn(0, sessions[0..], &command_overlays));
+}
+
+test "compactSessions moves command overlays with their grid slots" {
+    const allocator = std.testing.allocator;
+    const theme = colors_mod.Theme.default();
+
+    var storage = [_]SessionState{
+        try SessionState.init(allocator, 0, "/bin/sh", .{}, "", theme),
+        try SessionState.init(allocator, 1, "/bin/sh", .{}, "", theme),
+        try SessionState.init(allocator, 2, "/bin/sh", .{}, "", theme),
+    };
+    defer {
+        for (&storage) |*session| {
+            session.deinit(allocator);
+        }
+    }
+
+    storage[0].spawned = true;
+    storage[0].id = 10;
+    storage[1].spawned = false;
+    storage[1].id = 20;
+    storage[2].spawned = true;
+    storage[2].id = 30;
+
+    var sessions = [_]*SessionState{ &storage[0], &storage[1], &storage[2] };
+    var views = [_]SessionViewState{ .{}, .{}, .{} };
+    views[2].status = .done;
+
+    var render_cache = try renderer_mod.RenderCache.init(allocator, sessions.len);
+    defer render_cache.deinit();
+    render_cache.entries[2].presented_epoch = 30;
+
+    var command_overlays = try command_overlay_mod.CommandOverlaySet.init(allocator, sessions.len, "/bin/sh", .{}, "", theme);
+    defer command_overlays.deinit();
+    command_overlays.overlays[1].session.spawned = true;
+    command_overlays.overlays[1].visible = true;
+    command_overlays.overlays[2].session.spawned = true;
+    command_overlays.overlays[2].visible = true;
+    command_overlays.active_index = 2;
+    const moved_overlay = command_overlays.overlays[2];
+
+    command_overlays.despawnAt(1);
+
+    var anim_state = AnimationState{
+        .mode = .Grid,
+        .focused_session = 2,
+        .previous_session = 0,
+        .start_time = 0,
+        .start_rect = .{ .x = 0, .y = 0, .w = 0, .h = 0 },
+        .target_rect = .{ .x = 0, .y = 0, .w = 0, .h = 0 },
+    };
+
+    compactSessions(sessions[0..], views[0..], &render_cache, &command_overlays, &anim_state);
+
+    try std.testing.expectEqual(@as(usize, 10), sessions[0].id);
+    try std.testing.expectEqual(@as(usize, 30), sessions[1].id);
+    try std.testing.expectEqual(@as(usize, 1), sessions[1].slot_index);
+    try std.testing.expectEqual(app_state.SessionStatus.done, views[1].status);
+    try std.testing.expectEqual(@as(u64, 30), render_cache.entries[1].presented_epoch);
+    try std.testing.expectEqual(@as(usize, 1), anim_state.focused_session);
+    try std.testing.expectEqual(@as(?usize, 1), command_overlays.active_index);
+    try std.testing.expect(command_overlays.overlays[1] == moved_overlay);
+    try std.testing.expect(command_overlays.overlays[1].session.spawned);
+    try std.testing.expect(command_overlays.overlays[1].visible);
+    try std.testing.expect(!command_overlays.overlays[2].session.spawned);
+}
+
+test "quit teardown thread capacity covers main and overlay tasks" {
+    try std.testing.expectEqual(max_quit_teardown_tasks, max_quit_teardown_threads);
 }
 
 test "computeFrameWaitDecision returns idle wait while idle" {

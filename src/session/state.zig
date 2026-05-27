@@ -128,6 +128,7 @@ pub const SessionState = struct {
     quit_capture_active: bool = false,
     synchronized_output_started_ms: i64 = 0,
     synchronized_output_last_output_ms: i64 = 0,
+    has_foreground_process_override: ?bool = null,
 
     const WaitContext = struct {
         session: *SessionState,
@@ -705,6 +706,9 @@ pub const SessionState = struct {
     /// shell's PID, indicating that a child process is currently running in
     /// the terminal.
     pub fn hasForegroundProcess(self: *const SessionState) bool {
+        if (builtin.is_test) {
+            if (self.has_foreground_process_override) |value| return value;
+        }
         if (!self.spawned or self.dead) return false;
         const shell = self.shell orelse return false;
         const fg_pgrp = self.foregroundPgrp() orelse return false;
