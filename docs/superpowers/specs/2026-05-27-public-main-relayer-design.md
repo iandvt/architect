@@ -27,6 +27,8 @@ Each commit must build on its own unless a commit is explicitly documentation-on
 
 The directory chrome removal is one product decision, not multiple file-level commits. Keep it as a single commit even though it touches layout, renderer bounds, UI host data, and documentation.
 
+Keep the existing code as source material. The relayer is a history-shaping exercise, not a feature rollback. Standardize the public story by making the first foundation slice clean, then replay later features in separate passes.
+
 ## Date Policy
 
 When replaying an existing commit, preserve the original author and committer timestamps where possible:
@@ -58,11 +60,14 @@ NEW      feat(input): add command-g grid toggle shortcut
 NEW      feat(input): add plain arrow grid navigation
 NEW      feat(input): add enter grid expand
 NEW      feat(input): add command-shift-r reader shortcut
+        # foundation checkpoint: sections 1-4
 NEW      feat(ui): add command-t remote terminal overlay
 NEW      feat(app): add command-shift-s saved session picker
 NEW      fix(ui): polish saved session picker rows
 NEW      chore(ui): remove grid directory chrome
 ```
+
+The first public relayer pass should stop at the foundation checkpoint unless we explicitly decide to continue. That slice is roughly the first ten commits in the cleaned stack: existing workspace setup, Stable/Scratch sessions with validation packaging, removed hotkeys, and replacement baseline hotkeys. Later code stays in scope, but remote terminal, saved session picker, picker polish, and directory chrome removal should be replayed after the foundation is locked.
 
 ## Commit Boundaries
 
@@ -203,6 +208,30 @@ e92eafb -> fold into feat(app): add Stable/Scratch named sessions unless a small
 ```
 
 Some commits are intentionally split because the existing history mixes app sessions, shortcut policy, and documentation updates.
+
+## Execution Slices
+
+### Foundation Slice
+
+Execute first:
+
+- Section 1: keep `e178fd1` unchanged.
+- Section 2: rebuild Stable/Scratch named sessions with install, pinning, SDK workaround, and branch-aware bundle publishing support.
+- Section 3: replay each removed hotkey as its own `chore(input)` commit with tests and `FORK.md` updates.
+- Section 4: replay each preferred baseline hotkey as its own `feat(input)` commit with tests and `FORK.md` updates.
+
+Stop here for review. This gives public `main` a clean first slice without deciding the final shape of remote terminal or saved session picker.
+
+### Later Feature Slices
+
+Replay after the foundation is approved:
+
+- Section 5: remote terminal overlay and `command-t`.
+- Section 6: saved session picker and `command-shift-s`.
+- Section 7: saved session picker row polish.
+- Section 8: grid directory chrome removal.
+
+These features remain part of the target codebase, but their commit boundaries can be adjusted independently once the foundation slice is stable.
 
 ## Verification Gates
 
