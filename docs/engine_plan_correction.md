@@ -85,23 +85,17 @@ The UI framework refactor outlined in engine_plan.md has been **fully completed*
 
 ## Deviations and Technical Debt
 
-### 1. CWD Bar ✅ FIXED
+### 1. CWD Bar ✅ REMOVED
 
 **Previous Issue:** The CWD bar stored UI textures directly on `SessionState`, violating the "no UI state on sessions" invariant.
 
-**Resolution:** Created `CwdBarComponent` (`src/ui/components/cwd_bar.zig`) that:
-1. Maintains a per-session texture cache internally (keyed by session index)
-2. Renders during the UI overlay pass (after scene render)
-3. Tracks path changes to invalidate textures when CWD changes
-4. Supports font cache generation changes for DPI scaling
+**Current Resolution:** The grid no longer renders a CWD bar. Working directory tracking remains in `SessionState` for persistence, restore, remote terminal, and worktree workflows, but the UI snapshot no longer carries per-session directory display fields.
 
 **Changes made:**
-- Created `src/ui/components/cwd_bar.zig` with `CwdBarComponent`
-- Extended `SessionUiInfo` with `cwd_path` and `cwd_basename` fields
-- Removed `cwd_basename_tex`, `cwd_parent_tex`, `cwd_basename_w/h`, `cwd_parent_w/h`, `cwd_font_size`, and `cwd_dirty` from `SessionState`
-- Removed `renderCwdBar` and `renderFadeGradient` functions from `renderer.zig`
-- Removed unused CWD-related constants and `input` import from `renderer.zig`
-- Registered `CwdBarComponent` with `UiRoot` in `main.zig`
+- Removed `src/ui/components/cwd_bar.zig` and its sizing metrics
+- Removed CWD bar registration from the UI root setup
+- Removed grid height reservation from runtime sizing and renderer draw bounds
+- Removed per-session directory display fields from `SessionUiInfo`
 
 ### 2. Renderer-Owned Cache ✅ RESOLVED
 
@@ -136,11 +130,10 @@ These align with Section 10's prediction: "Once the framework exists, these beco
 
 ### Completed
 
-1. ✅ **Extract CWD bar to UI component** - DONE
-   - Created `src/ui/components/cwd_bar.zig`
-   - Component maintains per-session texture cache internally
-   - Removed `cwd_*_tex` fields from `SessionState`
-   - `SessionUiInfo` now carries `cwd_path` and `cwd_basename` for rendering
+1. ✅ **Remove CWD bar display chrome** - DONE
+   - Removed the grid CWD bar UI component
+   - Kept working directory persistence and focused-cwd workflows intact
+   - Removed per-session directory display fields from `SessionUiInfo`
 
 ### Future Considerations
 
@@ -156,4 +149,4 @@ These align with Section 10's prediction: "Once the framework exists, these beco
 
 ## Conclusion
 
-The engine plan has been implemented successfully with 100% adherence. The CWD bar deviation has been resolved by extracting it into a proper UI component (`CwdBarComponent`), fully satisfying the "no UI state on sessions" invariant.
+The engine plan has been implemented successfully with 100% adherence. The CWD bar deviation has been resolved by removing the grid directory chrome while keeping working directory state in the session layer.

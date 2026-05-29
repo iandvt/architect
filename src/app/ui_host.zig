@@ -70,8 +70,6 @@ pub fn makeUiHost(
         buffer[i] = .{
             .dead = session.dead,
             .spawned = session.spawned,
-            .cwd_path = session.cwd_path,
-            .cwd_basename = session.cwd_basename,
             .session_status = if (i < views.len) views[i].status else .idle,
         };
     }

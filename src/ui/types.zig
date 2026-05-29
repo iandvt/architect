@@ -8,8 +8,6 @@ const geom = @import("../geom.zig");
 pub const SessionUiInfo = struct {
     dead: bool,
     spawned: bool,
-    cwd_path: ?[]const u8 = null,
-    cwd_basename: ?[]const u8 = null,
     session_status: app_state.SessionStatus = .idle,
 };
 

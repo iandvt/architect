@@ -193,19 +193,8 @@ fn agentProcessStarted(session: *const SessionState) bool {
     return session.hasForegroundProcess();
 }
 
-fn adjustedRenderHeightForMode(mode: app_state.ViewMode, render_height: c_int, ui_scale: f32, grid_rows: usize) c_int {
-    return switch (mode) {
-        .Grid => blk: {
-            const cell_height = @divFloor(render_height, @as(c_int, @intCast(grid_rows)));
-            const reserved_per_cell: c_int = if (cell_height >= ui_mod.cwd_bar.minCellHeight(ui_scale))
-                ui_mod.cwd_bar.reservedHeight(ui_scale)
-            else
-                0;
-            const reserved_total = reserved_per_cell * @as(c_int, @intCast(grid_rows));
-            break :blk @max(0, render_height - reserved_total);
-        },
-        .Collapsing, .GridResizing, .Expanding, .Full, .PanningLeft, .PanningRight, .PanningUp, .PanningDown => render_height,
-    };
+fn adjustedRenderHeightForMode(_: app_state.ViewMode, render_height: c_int, _: f32, _: usize) c_int {
+    return render_height;
 }
 
 /// Which sessions need full-window cell dimensions for the given view mode.
@@ -261,9 +250,9 @@ fn applyTerminalLayoutIfSizeChanged(
     return layout.applyTerminalResize(sessions, allocator, sizes, full_set);
 }
 
-/// Computes both terminal sizes from the raw render dimensions. grid_size
-/// always uses the Grid-mode CWD-bar reservation so unfocused sessions stay at
-/// stable dims across view-mode toggles; full_size uses the raw render height.
+/// Computes both terminal sizes from the raw render dimensions. Unfocused
+/// sessions stay at grid size permanently, so their grid dimensions are kept
+/// stable across view-mode toggles.
 fn computeTerminalSizes(
     font: *font_mod.Font,
     render_width: c_int,
@@ -1459,8 +1448,6 @@ pub fn run(options: RunOptions) !void {
     try ui.register(confirm_dialog_component.asComponent());
     const global_shortcuts_component = try ui_mod.global_shortcuts.GlobalShortcutsComponent.create(allocator);
     try ui.register(global_shortcuts_component);
-    const cwd_bar_component = try ui_mod.cwd_bar.CwdBarComponent.init(allocator);
-    try ui.register(cwd_bar_component.asComponent());
     const metrics_overlay_component = try ui_mod.metrics_overlay.MetricsOverlayComponent.init(allocator);
     try ui.register(metrics_overlay_component.asComponent());
     const diff_overlay_component = try ui_mod.diff_overlay.DiffOverlayComponent.init(allocator);
@@ -3283,11 +3270,11 @@ fn resizeTestScaleChange(ctx: *TestScaleChangeContext) void {
     ctx.resize_calls += 1;
 }
 
-test "adjustedRenderHeightForMode reserves cwd bar only in stable grid mode" {
+test "adjustedRenderHeightForMode does not reserve grid directory chrome" {
     const render_height: c_int = 800;
     const grid_height = adjustedRenderHeightForMode(.Grid, render_height, 1.0, 2);
 
-    try std.testing.expect(grid_height < render_height);
+    try std.testing.expectEqual(render_height, grid_height);
     try std.testing.expectEqual(render_height, adjustedRenderHeightForMode(.Collapsing, render_height, 1.0, 2));
     try std.testing.expectEqual(render_height, adjustedRenderHeightForMode(.GridResizing, render_height, 1.0, 2));
     try std.testing.expectEqual(render_height, adjustedRenderHeightForMode(.Full, render_height, 1.0, 2));
