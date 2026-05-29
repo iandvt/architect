@@ -128,9 +128,9 @@ pub const Sizes = struct {
     full: TerminalSize,
 };
 
-/// `grid_window_height` should be the render height with the Grid-mode CWD-bar
-/// reservation applied (and should NOT vary across view modes — unfocused
-/// sessions stay at grid size permanently, so the grid dims must be stable).
+/// `grid_window_height` should be stable across view modes. Unfocused sessions
+/// stay at grid size permanently, so their dimensions should not vary while the
+/// focused session expands or collapses.
 /// `full_window_height` is the raw render height (the focused session uses the
 /// whole window when at full size).
 pub fn calculateTerminalSizes(
@@ -284,9 +284,8 @@ test "calculateTerminalSizes grid dims stay stable when only full height changes
     font.cell_width = 10;
     font.cell_height = 20;
 
-    // grid_window_height held constant; full_window_height varies (the typical
-    // case across view-mode toggles where the CWD-bar reservation only changes
-    // when the actual grid layout changes).
+    // grid_window_height is held constant while full_window_height varies
+    // across view-mode toggles.
     const a = calculateTerminalSizes(&font, 1200, 700, 800, 1.0, 2, 1, 1.0);
     const b = calculateTerminalSizes(&font, 1200, 700, 750, 1.0, 2, 1, 1.0);
     try std.testing.expectEqual(a.grid, b.grid);

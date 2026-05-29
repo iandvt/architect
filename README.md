@@ -41,7 +41,7 @@ Architect solves this with a grid view that keeps all your agents visible, with 
 - Smooth animated transitions for grid expansion, contraction, and reflow (cells and borders move/resize together)
 - Wakeable idle input handling keeps typing responsive after short idle periods instead of waiting on a fixed sleep window
 - Keyboard navigation: ⌘G toggles between full and grid view, Enter expands the focused grid tile, arrow keys move focus in grid view (with a brief wave animation on the destination terminal), ⌘Arrow moves between slots from full view, ⌘N adds, ⌘W closes a terminal (restarts if it's the only terminal), ⌘⇧R opens reader mode, ⌘T opens the remote terminal, ⌘⇧S opens saved sessions, ⌘/ opens shortcuts; quit with ⌘Q or the window close button
-- Per-cell cwd bar in grid view reserves space, and terminal dimensions track grid/full mode so content wraps inside the visible area
+- Terminal dimensions track grid/full mode so content wraps inside the visible area
 - Scrollback with trackpad/wheel support and an auto-hiding draggable scrollbar in terminal views
 - OSC 8 hyperlink support (Cmd+Click to open)
 - Replies to OSC 4/10/11 color queries using the live terminal palette/default colors so Codex and similar CLIs do not stall on startup probes
